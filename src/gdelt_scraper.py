@@ -5,19 +5,18 @@ import zipfile
 import io
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 import threading
-from dotenv import load_dotenv
-from src.utils.db_manager import ClickHouseManager
+from src.dao import SentimentRepo
+from src.model import GdeltMacroSentimentModel
+from apscheduler.schedulers.blocking import BlockingScheduler
 from src.utils.logger import app_logger
 
-load_dotenv()
 
 # 每小时的0分，15分，30分，45分拉取一次。
 class GDELTScraper:
     def __init__(self):
-        self.db = None
         self.tz_utc = pytz.UTC
         self._stop_event = threading.Event()
         self._thread = None
@@ -25,31 +24,8 @@ class GDELTScraper:
         
         # 核心关注的 CAMEO 根代码 (系统性风险)
         self.target_codes = ['16', '17', '18', '19', '20']
-        
-        # 配置读取逻辑
-        self.start_date_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
 
-    def _init_db(self):
-        if self.db is None:
-            self.db = ClickHouseManager()
 
-    def _get_start_timestamp(self):
-        """获取抓取起点：库中最后时间戳 -> .env 配置 -> 默认值"""
-        query = "SELECT max(publish_timestamp) as last_ts FROM gdelt_macro_sentiment"
-        res = self.db.client.query_df(query)
-        last_ts = res.iloc[0]['last_ts']
-        
-        if last_ts and not pd.isna(last_ts):
-            return last_ts.replace(tzinfo=pytz.UTC)
-        
-        env_start = os.getenv("SCRAPING_START_DATE")
-        if env_start:
-            try:
-                return datetime.strptime(env_start, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
-            except:
-                pass
-        
-        return datetime.strptime(self.start_date_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
 
     def fetch_and_process_v2(self, file_url, timestamp_str):
         """处理 GDELT 2.0 15分钟增量文件并转换为智能加权聚合宽表记录"""
@@ -73,7 +49,7 @@ class GDELTScraper:
             df_filtered = df[df['EventRootCode'].isin(self.target_codes)].copy()
             
             # 2. 准备宽表字典，初始值全为 0 (和平心跳)
-            wide_record = {'publish_timestamp': dt}
+            wide_record:dict = {'publish_timestamp': dt}
             for code in self.target_codes:
                 wide_record[f'count_{code}'] = 0
                 wide_record[f'tone_{code}'] = 0.0
@@ -108,16 +84,14 @@ class GDELTScraper:
                     else:
                         wide_record[f'tone_{code}'] = 0.0
                         wide_record[f'impact_{code}'] = 0.0
+            
+            raw_df = pd.DataFrame([wide_record])
 
-            # 4. 写入数据库 (单行写入)
-            to_save = pd.DataFrame([wide_record])
+            to_save=GdeltMacroSentimentModel.format_dataframe(raw_df)  # 验证数据结构正确性
             
-            # 映射字段顺序以匹配 ClickHouse DDL
-            cols_order = ['publish_timestamp']
-            for code in self.target_codes:
-                cols_order += [f'count_{code}', f'tone_{code}', f'impact_{code}']
             
-            self.db.client.insert_df('gdelt_macro_sentiment', to_save[cols_order])
+            SentimentRepo().insert_gdelt_macro_sentiment(to_save)
+            
             return 1
 
         except Exception as e:
@@ -126,8 +100,8 @@ class GDELTScraper:
 
     def sync_v2_incremental(self):
         """同步 GDELT 2.0 增量数据"""
-        self._init_db()
-        start_ts = self._get_start_timestamp()
+      
+        start_ts = SentimentRepo().get_latest_gdelt_macro_sentiment()
         app_logger.info(f"🔄 GDELT 增量同步起点: {start_ts}")
 
         try:
@@ -135,8 +109,6 @@ class GDELTScraper:
             if r.status_code != 200: return False
             
             lines = r.text.strip().split('\n')
-            last_file_ts = start_ts
-            
             for line in lines:
                 if self._stop_event.is_set(): break
                 parts = line.split(' ')
@@ -149,37 +121,41 @@ class GDELTScraper:
                 try:
                     file_ts = datetime.strptime(file_ts_str, "%Y%m%d%H%M%S").replace(tzinfo=pytz.UTC)
                 except: continue
-
                 if file_ts > start_ts:
-                    app_logger.info(f"📥 聚合 GDELT 智能加权宽行: {file_ts_str}")
+                    app_logger.info(f"📥 聚合 GDELT 开始下载文件: {file_ts_str}")
                     success = self.fetch_and_process_v2(file_url, file_ts_str)
                     if success:
-                        last_file_ts = file_ts
-                    time.sleep(0.5)
-
-            now_utc = datetime.now(pytz.UTC)
-            return (now_utc - last_file_ts).total_seconds() < 1800 
+                        start_ts = file_ts
+                    else:
+                        app_logger.warning(f"⚠️ GDELT 文件下载失败: {file_ts_str}， 10秒后再试一次")
+                        time.sleep(10)
+                        success=self.fetch_and_process_v2(file_url, file_ts_str)
+                        start_ts = file_ts 
+                        if not success:
+                            app_logger.error(f"🧨 GDELT 文件重试失败: {file_ts_str}，跳过这个文件")
 
         except Exception as e:
             app_logger.error(f"❌ GDELT 获取列表失败: {str(e)}")
-            return False
-
+            
+        
+    def _checking_data_complementation(self):
+        self.sync_v2_incremental()
+        
+    
     def _main_loop(self):
         app_logger.info("🛡️ GDELT 2.0 聚合搜刮子线程启动。")
-        while not self._stop_event.is_set():
-            try:
-                is_caught_up = self.sync_v2_incremental()
-                if is_caught_up:
-                    app_logger.info("😴 GDELT 已补齐智能加权数据，休眠 15 分钟...")
-                    for _ in range(15): 
-                        if self._stop_event.is_set(): break
-                        time.sleep(60)
-                else:
-                    app_logger.info("🚀 GDELT 历史智能加权进行中...")
-                    time.sleep(5)
-            except Exception as e:
-                app_logger.error(f"🧨 GDELT 调度异常: {str(e)}")
-                time.sleep(60)
+        self._checking_data_complementation()
+        self.scheduler = BlockingScheduler(timezone='US/Eastern')
+        self.scheduler.add_job(
+            self.sync_v2_incremental, 
+            'cron', 
+            minute="*/15", 
+            id='15min_gdelt_scraping',
+            coalesce=True            
+        )
+        # 👇 必须加上这行，阻塞当前子线程并开始调度！
+        self.scheduler.start()
+      
 
     def start(self):
         self._stop_event.clear()
@@ -189,7 +165,15 @@ class GDELTScraper:
 
     def stop(self):
         self._stop_event.set()
-        if self._thread: self._thread.join()
+        if self.scheduler:
+            try:
+                self.scheduler.shutdown(wait=False)
+                app_logger.info("🛑 GDELT 聚合搜刮器 调度器已关闭。")
+            except Exception as e:
+                app_logger.error(f"⚠️ 关闭 GDELT 聚合搜刮器 调度器时出错: {e}")
+        if self._thread:
+            self._thread.join(timeout=5)
+            app_logger.info("🛑 GDELT 聚合搜刮器 子线程已退出。")
 
 if __name__ == "__main__":
     scraper = GDELTScraper()

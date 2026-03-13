@@ -21,14 +21,26 @@ Fred_Indicator_Code = {
 Yahoo_Indicator_Code = {
     # --- 1. 流动性与定价锚 (连续交易的市场定价) ---
     '^TNX': 'US10Y',                  # 10年期美债收益率
+    
     # --- 5. 汇率与大宗商品 (慢变量) ---
     'DX-Y.NYB': 'DXY',                # 美元指数
     'CL=F': 'WTI_CRUDE',              # WTI 原油
-    'GC=F': 'GOLD',                    # 现货黄金
-    '^MOVE': 'VIX_3M',          # MOVE 构建期限结构
-    '^VIX3M': 'VIX3M',              # 3月期 VIX：中短期市场恐慌预期
+    'GC=F': 'GOLD',                   # 现货黄金
+    
+    # --- 6. 恐慌与波动率现货 (Yahoo 支持极好) ---
+    '^VIX': 'VIX_SPOT', # VIX 现货指数 (核心恐慌基准)
+    '^VVIX': 'VVIX',                  # VIX的VIX (衡量波动率的波动率，预判极端黑天鹅的利器)
+    '^VIX3M': 'VIX3M',                # 3个月期 VIX (中短期预期)
+    '^VIX6M': 'VIX6M',                # 6个月期 VIX (中长期预期)
+    '^MOVE': 'MOVE_BOND',             # ICE BofA 美债波动率 (债市的VIX，注意不是美股期限结构)
 }
-
+CBOE_Indicator_Code = {
+    # --- 波动率现货 (无成交量与持仓量) ---
+    
+    # --- 波动率期货连续合约 (包含 Volume 与 Open Interest) ---
+    'VX1': 'VX1',       # 近月连续合约 (Front-Month)
+    'VX2': 'VX2',       # 次月连续合约 (Next-Month)
+}
 # ForexFactory 映射 (基于稳定不变的 EventID)
 # 格式: { 'EventID': 'INTERNAL_CODE' }
 # 这种方式比基于 Title 映射更稳健，防止 FF 更改指标名称（如大小写、空格或微调名称）

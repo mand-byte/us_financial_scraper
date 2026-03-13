@@ -2,14 +2,15 @@ import time
 import signal
 import sys
 from src.utils.logger import app_logger
+from dotenv import load_dotenv
 from src import (
     FredScraper, 
     GDELTScraper, 
-    YahooFinanceScraper, 
+    CboeDataFetcher, 
     YahooMacroScraper,
     ForexFactoryScraper
 )
-
+load_dotenv()
 class ScraperOrchestrator:
     def __init__(self):
         app_logger.info("🏗️ 初始化搜刮调度中心...")
@@ -19,8 +20,8 @@ class ScraperOrchestrator:
             "FRED (宏观流动性)": FredScraper(),
             "GDELT (全球风险)": GDELTScraper(),
             "Yahoo-Macro (大宗/汇率)": YahooMacroScraper(),
-            "Yahoo-Klines (分时行情)": YahooFinanceScraper(chunk_size=40),
-            "ForexFactory (经济日历)": ForexFactoryScraper()
+            "ForexFactory (经济日历)": ForexFactoryScraper(),
+            "cboe (VIX 数据)": CboeDataFetcher()
         }
         self.is_running = True
 

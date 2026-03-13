@@ -4,13 +4,12 @@ import pandas as pd
 import pytz
 import threading
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
-from src.utils.db_manager import ClickHouseManager
+
 from src.utils.logger import app_logger
 from src.utils.constants import ForexFactory_Indicator_Code
-from src.forexfactory_scraper.scraper import scrape_month
-
-load_dotenv()
+from src.utils.forexfactory_scraper.scraper import scrape_month
+from src.dao.market_data_repo import MarketDataRepo
+from src.model.us_macro_indicators_model import UsMacroIndicatorsModel
 
 class ForexFactoryScraper:
     def __init__(self):
@@ -18,13 +17,11 @@ class ForexFactoryScraper:
         self._stop_event = threading.Event()
         self._thread = None
         self.indicators_map = ForexFactory_Indicator_Code
-        # 读取配置，默认 2014-01-01
-        self.start_date_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+  
+      
         self.et_tz = pytz.timezone("America/New_York")
 
-    def _init_db(self):
-        if self.db is None:
-            self.db = ClickHouseManager()
+
 
     def _clean_value(self, val_str):
         """清洗数值字符串 (如 2.5%, 450K, 1.2M -> 2.5, 450000, 1200000)"""
@@ -63,18 +60,7 @@ class ForexFactoryScraper:
 
     def sync_history(self):
         """同步历史数据：从数据库最后一次记录到上个月底"""
-        self._init_db()
-        target_codes = "','".join(self.indicators_map.values())
-        query = f"SELECT max(publish_timestamp) as last_ts FROM macro_indicators WHERE indicator_code IN ('{target_codes}')"
-        res = self.db.client.query_df(query)
-        last_ts = res.iloc[0]['last_ts']
-        
-        if last_ts and not pd.isna(last_ts):
-            start_dt = last_ts.to_pydatetime()
-            app_logger.info(f"🔄 增量同步历史: 从 {start_dt.date()} 开始")
-        else:
-            start_dt = datetime.strptime(self.start_date_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
-            app_logger.info(f"⏳ 初始冷启动同步: 从 {self.start_date_str} 开始")
+        start_dt=MarketDataRepo().get_latest_macro_indicators(self.indicators_map)
 
         now = datetime.now(pytz.UTC)
         # 补齐到上个月底（为了简单起见，这里按月步进）
@@ -89,8 +75,7 @@ class ForexFactoryScraper:
             if not df_raw.empty:
                 df_final = self.process_scraped_data(df_raw)
                 if not df_final.empty:
-                    self.db.save_macro(df_final)
-            
+                    MarketDataRepo().insert_marco_indicators(df_final)
             # 步进到下个月
             if current.month == 12:
                 current = current.replace(year=current.year + 1, month=1, day=1)
@@ -100,7 +85,7 @@ class ForexFactoryScraper:
 
     def sync_current_month(self):
         """同步当月数据并返回下一次公布时间"""
-        self._init_db()
+     
         now = datetime.now(pytz.UTC)
         month_label = now.strftime('%b').lower()
         
@@ -113,7 +98,8 @@ class ForexFactoryScraper:
         # 清洗并入库 (ReplacingMergeTree 会处理冲突/更新)
         df_final = self.process_scraped_data(df_raw)
         if not df_final.empty:
-            self.db.save_macro(df_final)
+            df=UsMacroIndicatorsModel.format_dataframe(df_final)  # 验证数据结构正确性
+            MarketDataRepo().insert_marco_indicators(df)
             
         # 计算下一次需要等待的公布时间 (Actual 为空的最近一条记录)
         # 过滤出监控列表内、且在当前时间之后的记录

@@ -6,7 +6,7 @@ import threading
 from datetime import datetime, timedelta
 from fredapi import Fred
 from dotenv import load_dotenv
-from src.utils.db_manager import ClickHouseManager
+from src.dao.clickhouse_manager import ClickHouseManager
 from src.utils.logger import app_logger
 from src.utils.constants import Fred_Indicator_Code
 

@@ -1,0 +1,1 @@
+from .tables_ddl import MARKET_DATA_TABLES
