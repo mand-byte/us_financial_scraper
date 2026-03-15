@@ -13,15 +13,14 @@ import os
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 class YahooMacroScraper:
-    def __init__(self):
-        self.db = None
-        self.tz_et = pytz.timezone('US/Eastern')
-        self._stop_event = threading.Event()
-        self._thread = None
+    def __init__(self,scheduler:BlockingScheduler):
         
+        self.tz_et = pytz.timezone('US/Eastern')
+        self._thread = None
+        self.scheduler=scheduler
         # 使用 constants.py 中的 Yahoo_Indicator_Code
         self.tickers = Yahoo_Indicator_Code
-        self.scheduler = None
+       
     
 
     def fetch_and_save(self, start_date="2014-01-01"):
@@ -74,24 +73,8 @@ class YahooMacroScraper:
             
         except Exception as e:
             app_logger.warning(f"⚠️ 轮询查询异常 (可能表还未建): {e}")
+    
     def hourly_scraping(self):
-        # now_utc= datetime.now(pytz.timezone('UTC')).replace(tzinfo=None)
-        # now_et = datetime.now(self.tz_et).strftime('%Y-%m-%d')
-        # open_time_df=get_trading_calendar(now_et,now_et)
-        # # 1. 判断今天是否为交易日（周末/节假日 df 会为空）
-        # if open_time_df.empty:
-        #     app_logger.info(f"{now_et} 非美股交易日，跳过抓取。")
-        #     return
-            
-        # # 2. 提取具体的时间值 (iloc[0] 取第一行)
-        # market_open_utc_value = open_time_df['market_open_utc'].iloc[0]
-        # market_close_utc_value = open_time_df['market_close_utc'].iloc[0]
-        # # 3. 计算闭市后 1 小时的时间点
-        # close_plus_1h = market_close_utc_value + timedelta(hours=1)
-        # # 4. 执行比对
-        # if market_open_utc_value < now_utc < close_plus_1h:
-        #   self.fetch_and_save(start_date=datetime.now(self.tz_et).strftime('%Y-%m-%d'))  # 只拉取当天数据，增量补齐
-        
         
         #有些指标非美股时间也会更新，所以不区分交易日，无脑强制覆盖当天数据，确保数据完整性和时效性
         self.fetch_and_save(start_date=datetime.now(self.tz_et).strftime('%Y-%m-%d'))
@@ -99,7 +82,7 @@ class YahooMacroScraper:
     def _main_loop(self):
         app_logger.info("🛡️ Yahoo 宏观“慢变量”后台子线程已启动 (日线精度)。")
         self._checking_data_complementation()
-        self.scheduler = BlockingScheduler(timezone='US/Eastern')
+        
         self.scheduler.add_job(
             self.hourly_scraping, 
             'cron', 
@@ -107,31 +90,13 @@ class YahooMacroScraper:
             id='hourly_yahoo_marco_scraping',
             coalesce=True            # 如果多次错过只运行一次
         )
-        # 👇 必须加上这行，阻塞当前子线程并开始调度！
-        self.scheduler.start()
     def start(self):
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._main_loop, daemon=True)
-        self._thread.start()
+        self._main_loop()
         app_logger.info("✅ Yahoo 宏观日线搜刮器已激活。")
 
     def stop(self):
-        self._stop_event.set()
         if self.scheduler:
-            try:
-                self.scheduler.shutdown(wait=False)
-                app_logger.info("🛑 yahoo marco 调度器已关闭。")
-            except Exception as e:
-                app_logger.error(f"⚠️ 关闭 yahoo marco 调度器时出错: {e}")
-        if self._thread:
-            self._thread.join(timeout=5)
-            app_logger.info("🛑 yahoo marco 子线程已退出。")
+            self.scheduler.remove_job('hourly_yahoo_marco_scraping')
+             
+        app_logger.info("🛑 yahoo marco 已退出。")
 
-if __name__ == "__main__":
-    scraper = YahooMacroScraper()
-    scraper.start()
-    try:
-        while True: time.sleep(10)
-    except KeyboardInterrupt:
-        scraper.stop()
-        app_logger.info("🛑 服务已安全退出。")

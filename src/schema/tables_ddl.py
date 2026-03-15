@@ -230,4 +230,68 @@ MARKET_DATA_TABLES = {
             -- 排序键加入 llm_name，支持多模型并发对比验证
             ORDER BY (cik, publish_timestamp, llm_name)
         """,
-}        
+        # 15.us_stock_daily_ratios_factors
+        "us_stock_daily_ratios_factors": """
+            CREATE TABLE IF NOT EXISTS us_stock_daily_ratios_factors
+            (
+                composite_figi String,
+                trade_date Date,                         -- 对齐 K 线的交易日
+                
+                -- 1. 估值与市值因子 (提取自 /v1/ratios)
+                market_cap Float64,                      -- 总市值 (数字极大，必须用 Float64)
+                enterprise_value Float64,                -- 企业价值 (EV)
+                pe_ratio Float32,                        -- 动态市盈率 (Price to Earnings)
+                pb_ratio Float32,                        -- 市净率 (Price to Book)
+                ps_ratio Float32,                        -- 市销率 (Price to Sales)
+                ev_to_ebitda Float32,                    -- EV/EBITDA 倍数
+                dividend_yield Float32,                  -- 股息率
+                
+                
+                update_time DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY (composite_figi, trade_date)
+        """,
+        "us_stock_daily_short_interest_factors": """
+            CREATE TABLE IF NOT EXISTS us_stock_daily_short_interest_factors
+            (
+                composite_figi String,
+                trade_date Date,                         -- 对齐 K 线的交易日
+                
+                -- 2. 微观博弈与情绪因子 (提取自 /v1/short-interest)
+   
+                short_interest UInt64,                   -- 当前未平仓的做空总股数
+                days_to_cover Float32,                   -- 空头回补天数 (极其危险的逼空指标)
+                
+                update_time DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY (composite_figi, trade_date)
+        """,
+        "us_stock_daily_short_volume_factors": """
+            CREATE TABLE IF NOT EXISTS us_stock_daily_short_volume_factors
+            (
+                composite_figi String,
+                trade_date Date,                         -- 对齐 K 线的交易日
+                -- 2. 微观博弈与情绪因子 (提取自 /v1/short-volume & /short-interest)
+                short_volume UInt64,                     -- 当日做空成交量
+                short_volume_ratio Float32,              -- 做空成交量占比 (如 31.57)
+                
+                update_time DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY (composite_figi, trade_date)
+        """,
+
+        "us_stock_daily_float_factors": """
+            CREATE TABLE IF NOT EXISTS us_stock_daily_float_factors
+            (
+                composite_figi String,
+                trade_date Date,                         -- 对齐 K 线的交易日
+                
+                -- 3. 流动性与筹码结构 (提取自 /vX/float)
+                free_float UInt64,                       -- 自由流通股本
+                free_float_percent Float32,              -- 流通盘占比 (如 98.5)
+                
+                update_time DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY (composite_figi, trade_date)
+        """,
+}

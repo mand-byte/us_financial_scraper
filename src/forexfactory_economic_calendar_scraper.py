@@ -10,14 +10,12 @@ from src.utils.constants import ForexFactory_Indicator_Code
 from src.utils.forexfactory_scraper.scraper import scrape_month
 from src.dao.market_data_repo import MarketDataRepo
 from src.model.us_macro_indicators_model import UsMacroIndicatorsModel
-
+from apscheduler.schedulers.blocking import BlockingScheduler
 class ForexFactoryScraper:
-    def __init__(self):
+    def __init__(self,scheduler:BlockingScheduler):
         self.db = None
-        self._stop_event = threading.Event()
-        self._thread = None
         self.indicators_map = ForexFactory_Indicator_Code
-  
+        self.scheduler=scheduler
       
         self.et_tz = pytz.timezone("America/New_York")
 
@@ -66,7 +64,6 @@ class ForexFactoryScraper:
         # 补齐到上个月底（为了简单起见，这里按月步进）
         current = start_dt
         while current.year < now.year or current.month < now.month:
-            if self._stop_event.is_set(): break
             
             month_label = current.strftime('%b').lower()
             app_logger.info(f"📅 正在同步历史月份: {current.year}-{month_label}")
@@ -100,80 +97,27 @@ class ForexFactoryScraper:
         if not df_final.empty:
             df=UsMacroIndicatorsModel.format_dataframe(df_final)  # 验证数据结构正确性
             MarketDataRepo().insert_marco_indicators(df)
-            
-        # 计算下一次需要等待的公布时间 (Actual 为空的最近一条记录)
-        # 过滤出监控列表内、且在当前时间之后的记录
-        future_events = df_final[
-            (df_final['publish_timestamp'] > now) | 
-            (df_final['actual_value'].isna())
-        ].sort_values('publish_timestamp')
+       
 
-        if not future_events.empty:
-            next_event_time = future_events.iloc[0]['publish_timestamp']
-            return next_event_time
-        
-        return None
-
-    def get_next_et_midnight(self):
-        """获取下一个美东时间 00:00 的 UTC 时间"""
-        now_et = datetime.now(self.et_tz)
-        tomorrow_et = (now_et + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        return tomorrow_et.astimezone(pytz.UTC)
 
     def _main_loop(self):
-        app_logger.info("🛡️ ForexFactory 业务调度子线程启动。")
-        
-        # 1. 先补全历史
-        try:
-            self.sync_history()
-        except Exception as e:
-            app_logger.error(f"🧨 历史同步异常: {e}")
-
-        # 2. 进入监控循环
-        while not self._stop_event.is_set():
-            try:
-                # 同步当月并获取下次唤醒时间
-                next_event_time = self.sync_current_month()
-                
-                # 保底唤醒时间：美东午夜
-                next_midnight = self.get_next_et_midnight()
-                
-                # 确定最终唤醒时间
-                now = datetime.now(pytz.UTC)
-                wake_up_time = next_midnight
-                
-                if next_event_time:
-                    # 如果有即将到来的公布，则在公布后 3 秒唤醒
-                    potential_wake_up = next_event_time + timedelta(seconds=3)
-                    if now < potential_wake_up < next_midnight:
-                        wake_up_time = potential_wake_up
-                        app_logger.info(f"⏳ 预定下次公布抓取: {wake_up_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-                else:
-                    app_logger.info(f"😴 今日无剩余指标，保底美东午夜唤醒: {wake_up_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-
-                # 计算等待秒数
-                wait_seconds = (wake_up_time - datetime.now(pytz.UTC)).total_seconds()
-                if wait_seconds > 0:
-                    # 分段休眠以响应停止事件
-                    for _ in range(int(wait_seconds / 60) + 1):
-                        if self._stop_event.is_set(): break
-                        time.sleep(min(60, wait_seconds))
-                        wait_seconds -= 60
-                
-            except Exception as e:
-                app_logger.error(f"🧨 监控循环异常: {str(e)}")
-                time.sleep(60) # 报错后等待一分钟重试
-
+        app_logger.info("🛡️ ForexFactory 业务调度启动。")
+        self.sync_history()
+        self.scheduler.add_job(
+            self.sync_current_month, 
+            'cron', 
+            hour=21, 
+            minute=0,
+            id='daily_forexfactory_scraping'
+        )
     def start(self):
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._main_loop, daemon=True)
-        self._thread.start()
+        self._main_loop()
         app_logger.info("✅ ForexFactory 生产级搜刮器已激活。")
 
     def stop(self):
-        self._stop_event.set()
-        if self._thread: self._thread.join()
+        if self.scheduler:
+            self.scheduler.remove_job('daily_forexfactory_scraping')
 
-if __name__ == "__main__":
-    scraper = ForexFactoryScraper()
-    scraper.sync_current_month()
+        app_logger.info("🛑 ForexFactory 生产级搜刮器 已退出。")
+
+

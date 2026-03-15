@@ -2,7 +2,6 @@
 # 负责 表1,2,6,7,11 (行情与宏观)
 
 from .clickhouse_manager import get_db_manager
-from src.model.us_macro_daily_kline_model   import  UsMacroDailyKlineModel
 import pandas as pd
 from src.utils.logger import app_logger
 import os
@@ -18,6 +17,23 @@ class MarketDataRepo:
         except Exception as e:
             app_logger.error(f"插入股票列表数据失败: {e}")
             raise e
+
+    def get_active_tickers(self) -> pd.DataFrame:
+        query = "SELECT * FROM us_stock_universe WHERE active = 1"
+        try:
+            res = self.db.client.query_df(query)
+            return res
+        except Exception as e:
+            app_logger.error(f"查询活跃股票列表失败: {e}")
+            return pd.DataFrame()
+    def get_delisted_tickers(self) -> pd.DataFrame:
+        query = "SELECT * FROM us_stock_universe WHERE WHERE active = 1"
+        try:
+            res =self.db.client.query_df(query)
+            return res
+        except Exception as e:
+            app_logger.error(f"查询退市股票列表失败: {e}")
+            return pd.DataFrame()
 
     def get_universe_tickers(self) -> pd.DataFrame:
         query = "SELECT * FROM us_stock_universe"

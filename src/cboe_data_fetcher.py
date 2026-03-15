@@ -11,44 +11,19 @@ import pandas as pd
 from datetime import datetime
 from src.utils import *
 import pytz
-import threading
-import time
 from src.model.us_macro_daily_kline_model import UsMacroDailyKlineModel
 from apscheduler.schedulers.blocking import BlockingScheduler
 from src.utils.logger import app_logger
 from src.dao import MarketDataRepo
 from src.utils.constants import CBOE_Indicator_Code
 class CboeDataFetcher:
-    def __init__(self):
+    def __init__(self,scheduler:BlockingScheduler):
         self.mapping = CBOE_Indicator_Code
-        self.tz_utc = pytz.UTC
-        self._stop_event = threading.Event()
-        self._thread = None
-        self.scheduler = None
+        self.scheduler = scheduler
 
     def start(self):
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._main_loop, daemon=True)
-        self._thread.start()
-        app_logger.info("✅ Cobe 数据拉取线程已启动。")
-
-    def stop(self):
-        self._stop_event.set()
-        if self.scheduler:
-            try:
-                self.scheduler.shutdown(wait=False)
-                app_logger.info("🛑 Cobe 调度器已关闭。")
-            except Exception as e:
-                app_logger.error(f"⚠️ 关闭 Cobe 调度器时出错: {e}")
-        if self._thread:
-            self._thread.join(timeout=5)
-            app_logger.info("🛑 Cobe 子线程已退出。")
-
-    def _main_loop(self):
-        app_logger.info("🛡️ Cobe 数据拉取线程子线程启动。")
-        # 使用美东时间
-        self.scheduler = BlockingScheduler(timezone='US/Eastern')
         
+        app_logger.info("✅ Cobe 数据拉取线程已启动。")
         # 设置 cron 任务：美东时间晚上 9 点 (21:00)
         # 初始运行一次以补齐数据
         self.scheduler.add_job(
@@ -56,16 +31,16 @@ class CboeDataFetcher:
             'cron', 
             hour=21, 
             minute=0, 
-            id='daily_vix_scraping',
-            coalesce=True            # 如果多次错过只运行一次
+            id='daily_vix_scraping'     
         )
         self.scraping()
-        try:
-            self.scheduler.start()
-        except (KeyboardInterrupt, SystemExit):
-            pass
-        except Exception as e:
-            app_logger.error(f"❌ Cobe 调度器运行崩溃: {e}")
+
+    def stop(self):
+        if self.scheduler:
+            self.scheduler.remove_job('daily_vix_scraping')
+        app_logger.info("🛑 Cobe拉取数据 已退出。")
+
+
 
     def scraping(self):
         """调度器执行的具体抓取任务"""
@@ -95,13 +70,3 @@ class CboeDataFetcher:
         futures_df = UsMacroDailyKlineModel.format_dataframe(futures_df)
         return futures_df
     
-if __name__ == "__main__":
-    
-    
-    fetcher = CboeDataFetcher()                                                             
-    fetcher.start()
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        fetcher.stop()

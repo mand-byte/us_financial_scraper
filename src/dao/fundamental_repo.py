@@ -141,4 +141,4 @@ class FundamentalRepo:
         except Exception as e:
             app_logger.error(f"查询{cik}最新个股新闻原文时间戳失败: {e}")
             time=os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(time, "%Y-%m-%d").replace(tzinfo=pytz.UTC)        
+            return datetime.strptime(time, "%Y-%m-%d").replace(tzinfo=pytz.UTC)

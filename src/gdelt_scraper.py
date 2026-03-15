@@ -16,12 +16,10 @@ from src.utils.logger import app_logger
 
 # 每小时的0分，15分，30分，45分拉取一次。
 class GDELTScraper:
-    def __init__(self):
-        self.tz_utc = pytz.UTC
-        self._stop_event = threading.Event()
-        self._thread = None
-        self.master_url = "http://data.gdeltproject.org/gdeltv2/masterfilelist.txt"
+    def __init__(self,scheduler:BlockingScheduler):
         
+        self.master_url = "http://data.gdeltproject.org/gdeltv2/masterfilelist.txt"
+        self.scheduler=scheduler
         # 核心关注的 CAMEO 根代码 (系统性风险)
         self.target_codes = ['16', '17', '18', '19', '20']
 
@@ -110,7 +108,6 @@ class GDELTScraper:
             
             lines = r.text.strip().split('\n')
             for line in lines:
-                if self._stop_event.is_set(): break
                 parts = line.split(' ')
                 if len(parts) < 3: continue
                 
@@ -145,7 +142,6 @@ class GDELTScraper:
     def _main_loop(self):
         app_logger.info("🛡️ GDELT 2.0 聚合搜刮子线程启动。")
         self._checking_data_complementation()
-        self.scheduler = BlockingScheduler(timezone='US/Eastern')
         self.scheduler.add_job(
             self.sync_v2_incremental, 
             'cron', 
@@ -153,28 +149,15 @@ class GDELTScraper:
             id='15min_gdelt_scraping',
             coalesce=True            
         )
-        # 👇 必须加上这行，阻塞当前子线程并开始调度！
-        self.scheduler.start()
       
 
     def start(self):
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._main_loop, daemon=True)
-        self._thread.start()
+        self._main_loop()
         app_logger.info("✅ GDELT 聚合搜刮器激活。")
 
     def stop(self):
-        self._stop_event.set()
         if self.scheduler:
-            try:
-                self.scheduler.shutdown(wait=False)
-                app_logger.info("🛑 GDELT 聚合搜刮器 调度器已关闭。")
-            except Exception as e:
-                app_logger.error(f"⚠️ 关闭 GDELT 聚合搜刮器 调度器时出错: {e}")
-        if self._thread:
-            self._thread.join(timeout=5)
-            app_logger.info("🛑 GDELT 聚合搜刮器 子线程已退出。")
+            self.scheduler.remove_job('15min_gdelt_scraping')
+        
+        app_logger.info("🛑 GDELT 聚合搜刮器 子线程已退出。")
 
-if __name__ == "__main__":
-    scraper = GDELTScraper()
-    scraper.sync_v2_incremental()
