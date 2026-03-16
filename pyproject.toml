@@ -1,0 +1,15 @@
+[project]
+name = "us-financial-scraper"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "apscheduler>=3.11.2",
+    "clickhouse-connect>=0.14.1",
+    "dotenv>=0.9.9",
+    "pandas>=3.0.1",
+    "pydantic>=2.12.5",
+    "requests>=2.32.5",
+    "yfinance>=1.2.0",
+]

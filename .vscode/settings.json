@@ -1,8 +1,5 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python.terminal.activateEnvInSelectedTerminal": true,
     // 建议开启：在保存时自动格式化代码，保持量化脚本整洁
     "editor.formatOnSave": true,
-    "python.formatting.provider": "black",
-    "python-envs.defaultPackageManager": "ms-python.python:conda"
+    "python-envs.defaultPackageManager": "${workspaceFolder}/.venv/bin/python"
 }

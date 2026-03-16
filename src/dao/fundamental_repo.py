@@ -121,6 +121,21 @@ class FundamentalRepo:
             time=os.getenv("SCRAPING_START_DATE", "2014-01-01")
             return datetime.strptime(time, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
 
+    def get_global_latest_news_timestamp(self) -> datetime:
+        """获取全市场新闻原文表中的最新时间戳"""
+        query = "SELECT max(published_utc) as last_ts FROM us_stock_news_raw"
+        try:
+            res = self.db.client.query_df(query)
+            last_ts = res.iloc[0]['last_ts']
+            if pd.notna(last_ts):
+                return pd.to_datetime(last_ts)
+            time_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+            return datetime.strptime(time_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+        except Exception as e:
+            app_logger.error(f"查询全市场新闻最新时间戳失败: {e}")
+            time_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+            return datetime.strptime(time_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+
     def insert_stock_news_raw(self, df: pd.DataFrame):
         try:
             self.db.client.insert_df('us_stock_news_raw', df)

@@ -1,6 +1,6 @@
 MARKET_DATA_TABLES = {
-        # 1. 股票宇宙表 (Universe)
-        "us_stock_universe": """
+    # 1. 股票宇宙表 (Universe)
+    "us_stock_universe": """
         CREATE TABLE IF NOT EXISTS us_stock_universe
             (
                 ticker String,
@@ -13,8 +13,8 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree(update_time)
             ORDER BY (composite_figi)
         """,
-        # 2. us ticker K线表
-        "us_minutes_klines":"""
+    # 2. us ticker K线表
+    "us_minutes_klines": """
             CREATE TABLE IF NOT EXISTS us_minutes_klines
             (
                 composite_figi String,
@@ -25,14 +25,15 @@ MARKET_DATA_TABLES = {
                 close Float32,
                 vwap Float32,       -- 【新增】分钟内加权平均持仓成本
                 trades_count UInt32,  -- 【新增】总成交笔数 (Massive 接口中的 'n')
-                volume UInt64
-            ) ENGINE = MergeTree()
+                volume UInt64,
+                update_time DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC')
+            ) ENGINE = ReplacingMergeTree(update_time)
             PARTITION BY toYYYYMM(timestamp)
             ORDER BY (composite_figi, timestamp)
             SETTINGS index_granularity = 8192
         """,
-        # 3 个股纯财务基本面表 (Fundamentals)
-        "us_stock_fundamentals":"""
+    # 3 个股纯财务基本面表 (Fundamentals)
+    "us_stock_fundamentals": """
             CREATE TABLE IF NOT EXISTS us_stock_fundamentals
             (
                 cik String,
@@ -49,8 +50,8 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree(update_time)
             ORDER BY (cik, publish_timestamp)
         """,
-        # 4 机构持仓变动表 (Institutional Holdings - 13F)
-        "us_stock_inst_holdings":"""
+    # 4 机构持仓变动表 (Institutional Holdings - 13F)
+    "us_stock_inst_holdings": """
             CREATE TABLE IF NOT EXISTS us_stock_inst_holdings
             (
                 cik String,
@@ -61,8 +62,8 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree(update_time)
             ORDER BY (cik, publish_timestamp)
         """,
-        # 5 内部人士持仓变动表 (Insider Holdings - Form 4)
-        "us_stock_insider_holdings":"""
+    # 5 内部人士持仓变动表 (Insider Holdings - Form 4)
+    "us_stock_insider_holdings": """
             CREATE TABLE IF NOT EXISTS us_stock_insider_holdings
             (
                 cik String,
@@ -72,8 +73,8 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree(update_time)
             ORDER BY (cik, publish_timestamp)
         """,
-        # 6 基准 ETF K线表 (SPY, QQQ, IWM 等)与us ticker K线表对齐
-            "us_benchmark_etf_klines":"""
+    # 6 基准 ETF K线表 (SPY, QQQ, IWM 等)与us ticker K线表对齐
+    "us_benchmark_etf_klines": """
             CREATE TABLE IF NOT EXISTS us_benchmark_etf_klines
                 (
                     ticker LowCardinality(String),  -- ETF极少退市或改名，且数量极少，用 LowCardinality(ticker) 性能最优
@@ -90,8 +91,8 @@ MARKET_DATA_TABLES = {
                 ORDER BY (ticker, timestamp)
                 SETTINGS index_granularity = 8192
             """,
-        # 7 日线 K线表 (包含yahoo的10年期美债收益率，美元指数。。及cobe的官方日k线数据)
-        "us_macro_daily_klines":"""
+    # 7 日线 K线表 (包含yahoo的10年期美债收益率，美元指数。。及cobe的官方日k线数据)
+    "us_macro_daily_klines": """
             CREATE TABLE IF NOT EXISTS us_macro_daily_klines
             (
                 ticker LowCardinality(String),  -- 'US10Y', 'DXY', 'GOLD', VIX' (现货), 'VX1' (近月), 'VX2' (次月) 等
@@ -105,8 +106,8 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree()
             ORDER BY (ticker, trade_date)
         """,
-        # 8 个股公司行动表
-        "us_stock_actions": """
+    # 8 个股公司行动表
+    "us_stock_actions": """
         CREATE TABLE IF NOT EXISTS us_stock_actions
             (
                 composite_figi String,
@@ -117,8 +118,8 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree()
             ORDER BY (composite_figi, ex_date, action_type)
         """,
-        #9 个股公司财报表，本地提取
-        "us_stock_earnings_raw": """
+    # 9 个股公司财报表，本地提取
+    "us_stock_earnings_raw": """
             CREATE TABLE IF NOT EXISTS us_stock_earnings_raw
             (
                 cik String,
@@ -132,8 +133,8 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree(update_time)
             ORDER BY (cik, publish_timestamp)
         """,
-            # 10 个股新闻原始表，存储从新闻源抓取的未经处理的新闻文本与元信息，供后续LLM打分与情绪分析使用
-            "us_stock_news_raw": """
+    # 10 个股新闻原始表，存储从新闻源抓取的未经处理的新闻文本与元信息，供后续LLM打分与情绪分析使用
+    "us_stock_news_raw": """
             CREATE TABLE IF NOT EXISTS us_stock_news_raw
             (
                 news_id String,                          -- 建议用 URL 或 (标题+时间) 的 MD5 哈希
@@ -145,8 +146,8 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree(update_time)
             ORDER BY (composite_figi, publish_timestamp, news_id)
         """,
-            # 11. 宏观经济指标表 (Macro)
-            "us_macro_indicators": """
+    # 11. 宏观经济指标表 (Macro)
+    "us_macro_indicators": """
                 CREATE TABLE IF NOT EXISTS us_macro_indicators
                 (
                     publish_timestamp DateTime64(3, 'UTC'),
@@ -157,8 +158,8 @@ MARKET_DATA_TABLES = {
                 ) ENGINE = ReplacingMergeTree()
                 ORDER BY (indicator_code, publish_timestamp)
             """,
-            # 12. 全局地缘与系统性风险表 (GDELT - 聚合模式)
-            "gdelt_macro_sentiment": """
+    # 12. 全局地缘与系统性风险表 (GDELT - 聚合模式)
+    "gdelt_macro_sentiment": """
                 CREATE TABLE IF NOT EXISTS gdelt_macro_sentiment
                 (
                     publish_timestamp DateTime64(3, 'UTC'),
@@ -190,8 +191,8 @@ MARKET_DATA_TABLES = {
                 ) ENGINE = ReplacingMergeTree()
                 ORDER BY publish_timestamp
             """,
-            # 13.个股新闻情绪张量表
-            "us_stock_news_sentiment": """
+    # 13.个股新闻情绪张量表
+    "us_stock_news_sentiment": """
             CREATE TABLE IF NOT EXISTS us_stock_news_sentiment
             (
                 composite_figi String,                   -- 冗余存储，避免 JOIN
@@ -204,8 +205,8 @@ MARKET_DATA_TABLES = {
             -- 排序键加入 llm_name，完美支持对同一条新闻用不同模型打分并存
             ORDER BY (composite_figi,news_id, publish_timestamp, llm_name)
         """,
-        # 14. 个股财报定性分析表
-        "us_stock_earnings_sentiment": """
+    # 14. 个股财报定性分析表
+    "us_stock_earnings_sentiment": """
             CREATE TABLE IF NOT EXISTS us_stock_earnings_sentiment
             (
                 cik String,
@@ -230,8 +231,8 @@ MARKET_DATA_TABLES = {
             -- 排序键加入 llm_name，支持多模型并发对比验证
             ORDER BY (cik, publish_timestamp, llm_name)
         """,
-        # 15.us_stock_daily_ratios_factors
-        "us_stock_daily_ratios_factors": """
+    # 15.us_stock_daily_ratios_factors
+    "us_stock_daily_ratios_factors": """
             CREATE TABLE IF NOT EXISTS us_stock_daily_ratios_factors
             (
                 composite_figi String,
@@ -251,7 +252,7 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree(update_time)
             ORDER BY (composite_figi, trade_date)
         """,
-        "us_stock_daily_short_interest_factors": """
+    "us_stock_daily_short_interest_factors": """
             CREATE TABLE IF NOT EXISTS us_stock_daily_short_interest_factors
             (
                 composite_figi String,
@@ -266,7 +267,7 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree(update_time)
             ORDER BY (composite_figi, trade_date)
         """,
-        "us_stock_daily_short_volume_factors": """
+    "us_stock_daily_short_volume_factors": """
             CREATE TABLE IF NOT EXISTS us_stock_daily_short_volume_factors
             (
                 composite_figi String,
@@ -279,8 +280,7 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree(update_time)
             ORDER BY (composite_figi, trade_date)
         """,
-
-        "us_stock_daily_float_factors": """
+    "us_stock_daily_float_factors": """
             CREATE TABLE IF NOT EXISTS us_stock_daily_float_factors
             (
                 composite_figi String,
