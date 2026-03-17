@@ -271,7 +271,7 @@ class MassiveApi:
         endpoint = "/stocks/financials/v1/cash-flow-statements"
         params = {
             "cik": cik,
-            "filing_date.gtw": filing_date,
+            "filing_date.gte": filing_date,
             "limit": limit,
             "timeframe": timeframe,
             "sort": "period_end.asc",
@@ -319,7 +319,7 @@ class MassiveApi:
         endpoint = "/stocks/financials/v1/income-statements"
         params = {
             "cik": cik,
-            "filing_date.gtw": filing_date,
+            "filing_date.gte": filing_date,
             "limit": limit,
             "timeframe": timeframe,
             "sort": "period_end.asc",
@@ -495,7 +495,7 @@ class MassiveApi:
         endpoint = "/stocks/v1/splits"
         params = {
             "ticker": ticker,
-            "execution_date": execution_date,
+            "execution_date.gte": execution_date,
             "sort": sort,
             "limit": limit,
         }
@@ -506,9 +506,9 @@ class MassiveApi:
                 for item in data_.get("results", []):
                     # 基础元数据
                     row = {
-                        # Classification of the share-change event. Possible values include: forward_split (share count increases), reverse_split (share count decreases), stock_dividend (shares issued as a dividend)
+                        "id": item.get("id"),
                         "adjustment_type": item.get("adjustment_type"),
-                        "ex_date": item.get("execution_date"),
+                        "execution_date": item.get("execution_date"),
                         "split_from": item.get("split_from"),
                         "split_to": item.get("split_to"),
                     }
@@ -527,13 +527,13 @@ class MassiveApi:
             return pd.DataFrame()
 
     # 获取派息记录
-    def get_dividens(
-        self, ticker: str, ex_dividend_date: str = "2000-1-15", limit: int = 5000
+    def get_dividends(
+        self, ticker: str, ex_dividend_date: str = "2000-01-15", limit: int = 5000
     ) -> pd.DataFrame:
         endpoint = "/stocks/v1/dividends"
         params = {
             "ticker": ticker,
-            "ex_dividend_date": ex_dividend_date,
+            "ex_dividend_date.gte": ex_dividend_date,
             "limit": limit,
         }
         try:
@@ -543,7 +543,8 @@ class MassiveApi:
                 for item in data_.get("results", []):
                     # 基础元数据
                     row = {
-                        "date": item.get("ex_dividend_date"),
+                        "id": item.get("id"),
+                        "ex_dividend_date": item.get("ex_dividend_date"),
                         "cash_amount": item.get("cash_amount"),
                         "pay_date": item.get("pay_date"),
                         "declaration_date": item.get("declaration_date"),
@@ -562,21 +563,20 @@ class MassiveApi:
             )
             return pd.DataFrame()
 
-    # 获取stock改名记录
-    def get_stock_events(self, figi: str):
-        endpoint = f"/vX/reference/tickers/{figi}/events"
-        data_ = self.request("GET", endpoint)
+    # 获取股票重大事件 (改名、退市、代码变更)
+    def get_stock_events(self, id: str, id_type: str = "figi"):
+        """
+        id: ticker or figi
+        id_type: 'figi' or 'ticker'
+        """
+        endpoint = f"/vX/reference/tickers/{id}/events" if id_type == "figi" else f"/vX/reference/tickers/{id}/events"
+        # Massive 官方推荐使用 figi 避免代码重用干扰
         try:
-            result_raw = []
-            for item in data_.get("results", []):
-                result_raw.append(
-                    {
-                        "date": item.get("date"),
-                        "ticker": item.get("ticker_change").get("ticker"),
-                    }
-                )
+            data_ = self.request("GET", endpoint)
+            results = data_.get("results", [])
+            return pd.DataFrame(results)
         except Exception as e:
-            app_logger.error(f"抓取 stock_events 数据失败 [figi: {figi}]: {e}")
+            app_logger.error(f"抓取重大事件失败 [{id}]: {e}")
             return pd.DataFrame()
 
     def start_wss(self, callback: Callable[[list], None]):

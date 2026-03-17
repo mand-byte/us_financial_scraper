@@ -62,16 +62,23 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree(update_time)
             ORDER BY (cik, publish_timestamp)
         """,
-    # 5 内部人士持仓变动表 (Insider Holdings - Form 4)
-    "us_stock_insider_holdings": """
-            CREATE TABLE IF NOT EXISTS us_stock_insider_holdings
+    # 5. 内部人士交易表 (Insider Transactions - Form 4)
+    "us_stock_insider_trades": """
+            CREATE TABLE IF NOT EXISTS us_stock_insider_trades
             (
-                cik String,
-                publish_timestamp DateTime64(3, 'UTC'),  -- Form 4 文件的实际披露时间 (PIT)
-                insider_hold_pct Float32,                -- 内部人士总持仓比例
+                composite_figi String,
+                ticker String,
+                filing_timestamp DateTime64(3, 'UTC'),  -- SEC 申报时间 (PIT 核心锚点)
+                trade_date Date,                         -- 实际交易发生日
+                insider_name String,
+                insider_title String,
+                trade_type String,                       -- P-Purchase, S-Sale, S-Sale+OE 等
+                price Float32,
+                qty Int64,
+                trade_value Float64,                     -- 交易总金额 (绝对值)
                 update_time DateTime DEFAULT now()
             ) ENGINE = ReplacingMergeTree(update_time)
-            ORDER BY (cik, publish_timestamp)
+            ORDER BY (composite_figi, filing_timestamp, insider_name, trade_type, qty)
         """,
     # 6 基准 ETF K线表 (SPY, QQQ, IWM 等)与us ticker K线表对齐
     "us_benchmark_etf_klines": """
@@ -106,17 +113,34 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree()
             ORDER BY (ticker, trade_date)
         """,
-    # 8 个股公司行动表
-    "us_stock_actions": """
-        CREATE TABLE IF NOT EXISTS us_stock_actions
+    # 8. 个股派息表 (Dividends)
+    "us_stock_dividends": """
+        CREATE TABLE IF NOT EXISTS us_stock_dividends
             (
+                id String,               -- Massive 提供的唯一记录 ID
                 composite_figi String,
-                ex_date Date,
-                action_type Enum8('split' = 1, 'dividend' = 2),
-                split_ratio Float32,      -- 例如 1拆4 则为 0.25
-                cash_amount Float32       -- 分红金额
-            ) ENGINE = ReplacingMergeTree()
-            ORDER BY (composite_figi, ex_date, action_type)
+                ticker String,
+                ex_date Date,            -- 除息日
+                declaration_date Nullable(Date),
+                pay_date Nullable(Date),
+                cash_amount Float32,
+                update_time DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY (composite_figi, ex_date, id)
+        """,
+    # 8.1 个股拆合并表 (Splits)
+    "us_stock_splits": """
+        CREATE TABLE IF NOT EXISTS us_stock_splits
+            (
+                id String,
+                composite_figi String,
+                ticker String,
+                ex_date Date,            -- 执行日
+                split_from Float32,
+                split_to Float32,
+                update_time DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY (composite_figi, ex_date, id)
         """,
     # 9 个股公司财报表，本地提取
     "us_stock_earnings_raw": """
@@ -294,4 +318,63 @@ MARKET_DATA_TABLES = {
             ) ENGINE = ReplacingMergeTree(update_time)
             ORDER BY (composite_figi, trade_date)
         """,
+    # ==========================================
+    # 16. 任务状态追踪表 (垂直解耦模式 - 仅记录退市标的)
+    # ==========================================
+    "us_minutes_klines_state": """
+        CREATE TABLE IF NOT EXISTS us_minutes_klines_state (
+            composite_figi String,
+            state UInt8 DEFAULT 0,
+            update_time DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(update_time) ORDER BY (composite_figi)
+    """,
+    "us_stock_fundamentals_state": """
+        CREATE TABLE IF NOT EXISTS us_stock_fundamentals_state (
+            cik String,
+            state UInt8 DEFAULT 0,
+            update_time DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(update_time) ORDER BY (cik)
+    """,
+    "us_stock_inst_holdings_state": """
+        CREATE TABLE IF NOT EXISTS us_stock_inst_holdings_state (
+            cik String,
+            state UInt8 DEFAULT 0,
+            update_time DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(update_time) ORDER BY (cik)
+    """,
+    "us_stock_insider_trades_state": """
+        CREATE TABLE IF NOT EXISTS us_stock_insider_trades_state (
+            composite_figi String,
+            state UInt8 DEFAULT 0,
+            update_time DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(update_time) ORDER BY (composite_figi)
+    """,
+    "us_stock_dividends_state": """
+        CREATE TABLE IF NOT EXISTS us_stock_dividends_state (
+            composite_figi String,
+            state UInt8 DEFAULT 0,
+            update_time DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(update_time) ORDER BY (composite_figi)
+    """,
+    "us_stock_splits_state": """
+        CREATE TABLE IF NOT EXISTS us_stock_splits_state (
+            composite_figi String,
+            state UInt8 DEFAULT 0,
+            update_time DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(update_time) ORDER BY (composite_figi)
+    """,
+    "us_stock_earnings_raw_state": """
+        CREATE TABLE IF NOT EXISTS us_stock_earnings_raw_state (
+            cik String,
+            state UInt8 DEFAULT 0,
+            update_time DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(update_time) ORDER BY (cik)
+    """,
+    "us_stock_news_raw_state": """
+        CREATE TABLE IF NOT EXISTS us_stock_news_raw_state (
+            composite_figi String,
+            state UInt8 DEFAULT 0,
+            update_time DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(update_time) ORDER BY (composite_figi)
+    """,
 }

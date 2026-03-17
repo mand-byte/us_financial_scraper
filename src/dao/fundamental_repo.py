@@ -3,7 +3,7 @@
 from .clickhouse_manager import get_db_manager
 from src.utils.logger import app_logger
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 import os
 import pytz
 class FundamentalRepo:
@@ -55,49 +55,70 @@ class FundamentalRepo:
             time=os.getenv("SCRAPING_START_DATE", "2014-01-01")
             return datetime.strptime(time, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
 
-    def insert_stock_insider_holdings(self,df: pd.DataFrame): 
+    def insert_stock_insider_trades(self, df: pd.DataFrame):
         try:
-            self.db.client.insert_df('us_stock_insider_holdings', df)
+            self.db.client.insert_df('us_stock_insider_trades', df)
         except Exception as e:
-            app_logger.error(f"{df.iloc[0]['cik']} 插入 us_stock_insider_holdings 失败: {e}")
+            app_logger.error(f"插入 us_stock_insider_trades 失败: {e}")
             raise e
-    def get_latest_insider_holdings_timestamp(self, cik: str) -> datetime:
-        query = f"SELECT max(publish_timestamp) as last_ts FROM us_stock_insider_holdings WHERE cik = '{cik}'"
-        
+
+    def get_latest_insider_trade_filing(self, composite_figi: str) -> datetime:
+        query = f"SELECT max(filing_timestamp) as last_ts FROM us_stock_insider_trades WHERE composite_figi = '{composite_figi}'"
         try:
             res = self.db.client.query_df(query)
             last_ts = res.iloc[0]['last_ts']
             if pd.notna(last_ts):
-                return pd.to_datetime(last_ts)
-            app_logger.warning(f"{cik} 在 us_stock_insider_holdings 中没有数据，返回默认开始时间")
-            time=os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(time, "%Y-%m-%d").replace(tzinfo=pytz.UTC) 
-        except Exception as e:
-            app_logger.error(f"查询{cik}最新内部人士持仓时间戳失败: {e}")
-            time=os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(time, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+                return pd.to_datetime(last_ts).replace(tzinfo=pytz.UTC)
+            return datetime.strptime(os.getenv("SCRAPING_START_DATE", "2014-01-01"), "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+        except Exception:
+            return datetime.strptime(os.getenv("SCRAPING_START_DATE", "2014-01-01"), "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+
+    def get_global_latest_insider_filing_timestamp(self) -> datetime:
+        query = "SELECT max(filing_timestamp) as last_ts FROM us_stock_insider_trades"
+        try:
+            res = self.db.client.query_df(query)
+            last_ts = res.iloc[0]['last_ts']
+            if pd.notna(last_ts):
+                return pd.to_datetime(last_ts).replace(tzinfo=pytz.UTC)
+            return datetime.strptime(os.getenv("SCRAPING_START_DATE", "2014-01-01"), "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+        except Exception:
+            return datetime.strptime(os.getenv("SCRAPING_START_DATE", "2014-01-01"), "%Y-%m-%d").replace(tzinfo=pytz.UTC)
     
-    def insert_stock_actions(self, df: pd.DataFrame):
+    def insert_stock_dividends(self, df: pd.DataFrame):
         try:
-            self.db.client.insert_df('us_stock_actions', df)
+            self.db.client.insert_df('us_stock_dividends', df)
         except Exception as e:
-            app_logger.error(f"{df.iloc[0]['cik']} 插入 us_stock_actions 失败: {e}")
+            app_logger.error(f"插入 us_stock_dividends 失败: {e}")
             raise e 
-    def get_latest_stock_actions_timestamp(self, cik: str) -> datetime:
-        query = f"SELECT max(publish_timestamp) as last_ts FROM us_stock_actions WHERE cik = '{cik}'"
-        
+
+    def get_latest_stock_dividends_date(self, composite_figi: str) -> date:
+        query = f"SELECT max(ex_date) as last_date FROM us_stock_dividends WHERE composite_figi = '{composite_figi}'"
         try:
             res = self.db.client.query_df(query)
-            last_ts = res.iloc[0]['last_ts']
-            if pd.notna(last_ts):
-                return pd.to_datetime(last_ts)
-            app_logger.warning(f"{cik} 在 us_stock_actions 中没有数据，返回默认开始时间")
-            time=os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(time, "%Y-%m-%d").replace(tzinfo=pytz.UTC) 
+            last_date = res.iloc[0]['last_date']
+            if pd.notna(last_date):
+                return pd.to_datetime(last_date).date()
+            return datetime.strptime(os.getenv("SCRAPING_START_DATE", "2014-01-01"), "%Y-%m-%d").date()
         except Exception as e:
-            app_logger.error(f"查询{cik}最新公司行动时间戳失败: {e}")
-            time=os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(time, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+            return datetime.strptime(os.getenv("SCRAPING_START_DATE", "2014-01-01"), "%Y-%m-%d").date()
+
+    def insert_stock_splits(self, df: pd.DataFrame):
+        try:
+            self.db.client.insert_df('us_stock_splits', df)
+        except Exception as e:
+            app_logger.error(f"插入 us_stock_splits 失败: {e}")
+            raise e
+
+    def get_latest_stock_splits_date(self, composite_figi: str) -> date:
+        query = f"SELECT max(ex_date) as last_date FROM us_stock_splits WHERE composite_figi = '{composite_figi}'"
+        try:
+            res = self.db.client.query_df(query)
+            last_date = res.iloc[0]['last_date']
+            if pd.notna(last_date):
+                return pd.to_datetime(last_date).date()
+            return datetime.strptime(os.getenv("SCRAPING_START_DATE", "2014-01-01"), "%Y-%m-%d").date()
+        except Exception as e:
+            return datetime.strptime(os.getenv("SCRAPING_START_DATE", "2014-01-01"), "%Y-%m-%d").date()
     
     def insert_stock_earnings_raw(self, df: pd.DataFrame):
         try:

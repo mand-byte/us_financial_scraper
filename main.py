@@ -6,7 +6,11 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from dotenv import load_dotenv
 from src import (
     MassiveDataFetcher,
+    MassiveFundamentalScraper,
+    MassiveBenchmarkScraper,
     MassiveNewsFetcher,
+    MassiveActionsFetcher,
+    OpenInsiderScraper,
     FredScraper,
     GDELTScraper,
     CboeDataFetcher,
@@ -29,7 +33,11 @@ class ScraperOrchestrator:
         # 1. 实例化所有搜刮器
         self.scrapers = [
             MassiveDataFetcher(self.scheduler),
+            MassiveFundamentalScraper(self.scheduler),
+            MassiveBenchmarkScraper(self.scheduler),
             MassiveNewsFetcher(self.scheduler),
+            MassiveActionsFetcher(self.scheduler),
+            OpenInsiderScraper(self.scheduler),
             FredScraper(self.scheduler),
             GDELTScraper(self.scheduler),
             YahooMacroScraper(self.scheduler),

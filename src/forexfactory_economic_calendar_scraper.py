@@ -11,19 +11,20 @@ from src.utils.forexfactory_scraper.scraper import scrape_month
 from src.dao.market_data_repo import MarketDataRepo
 from src.model.us_macro_indicators_model import UsMacroIndicatorsModel
 from apscheduler.schedulers.blocking import BlockingScheduler
+from zoneinfo import ZoneInfo
+
 class ForexFactoryScraper:
-    def __init__(self,scheduler:BlockingScheduler):
-        self.db = None
+    NYC = ZoneInfo("America/New_York")
+
+    def __init__(self, scheduler: BlockingScheduler):
         self.indicators_map = ForexFactory_Indicator_Code
-        self.scheduler=scheduler
-      
-        self.et_tz = pytz.timezone("America/New_York")
-
-
+        self.scheduler = scheduler
+        self.repo = MarketDataRepo()
+        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
 
     def _clean_value(self, val_str):
         """清洗数值字符串 (如 2.5%, 450K, 1.2M -> 2.5, 450000, 1200000)"""
-        if not val_str or val_str.strip() == "":
+        if not val_str or str(val_str).strip() == "":
             return None
         clean_val = str(val_str).replace('%', '').replace(',', '').strip()
         try:
@@ -57,67 +58,55 @@ class ForexFactoryScraper:
         return pd.DataFrame(processed_list)
 
     def sync_history(self):
-        """同步历史数据：从数据库最后一次记录到上个月底"""
-        start_dt=MarketDataRepo().get_latest_macro_indicators(self.indicators_map)
+        """同步历史数据：从数据库记录开始逐月追溯"""
+        last_ts = self.repo.get_latest_macro_indicators(list(self.indicators_map.values()))
+        start_dt = last_ts if last_ts else datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
 
         now = datetime.now(pytz.UTC)
-        # 补齐到上个月底（为了简单起见，这里按月步进）
-        current = start_dt
-        while current.year < now.year or current.month < now.month:
-            
+        current = start_dt.replace(day=1) # 从该月 1 号开始补
+        
+        while current <= now:
             month_label = current.strftime('%b').lower()
-            app_logger.info(f"📅 正在同步历史月份: {current.year}-{month_label}")
-            df_raw = scrape_month(month_label, current.year)
+            year = current.year
+            app_logger.info(f"📅 ForexFactory: 正在补齐月份: {year}-{month_label}")
             
-            if not df_raw.empty:
-                df_final = self.process_scraped_data(df_raw)
-                if not df_final.empty:
-                    MarketDataRepo().insert_marco_indicators(df_final)
-            # 步进到下个月
+            try:
+                df_raw = scrape_month(month_label, year)
+                if not df_raw.empty:
+                    df_processed = self.process_scraped_data(df_raw)
+                    if not df_processed.empty:
+                        # Model -> DF -> Repo
+                        clean_df = UsMacroIndicatorsModel.format_dataframe(df_processed)
+                        self.repo.insert_marco_indicators(clean_df)
+            except Exception as e:
+                app_logger.error(f"抓取 {year}-{month_label} 失败: {e}")
+            
+            # 步进
             if current.month == 12:
-                current = current.replace(year=current.year + 1, month=1, day=1)
+                current = current.replace(year=year + 1, month=1)
             else:
-                current = current.replace(month=current.month + 1, day=1)
-            time.sleep(2)
+                current = current.replace(month=current.month + 1)
+            time.sleep(1)
 
-    def sync_current_month(self):
-        """同步当月数据并返回下一次公布时间"""
-     
-        now = datetime.now(pytz.UTC)
-        month_label = now.strftime('%b').lower()
+    def start(self):
+        app_logger.info("✅ ForexFactory 宏观日历搜刮器激活。")
         
-        app_logger.info(f"🔎 正在扫描/更新本月数据 ({now.year}-{month_label})...")
-        df_raw = scrape_month(month_label, now.year)
-        
-        if df_raw.empty:
-            return None
-
-        # 清洗并入库 (ReplacingMergeTree 会处理冲突/更新)
-        df_final = self.process_scraped_data(df_raw)
-        if not df_final.empty:
-            df=UsMacroIndicatorsModel.format_dataframe(df_final)  # 验证数据结构正确性
-            MarketDataRepo().insert_marco_indicators(df)
-       
-
-
-    def _main_loop(self):
-        app_logger.info("🛡️ ForexFactory 业务调度启动。")
+        # 1. 启动时补齐历史
         self.sync_history()
+        
+        # 2. 每日 21:00 NYC 更新当月最新数值
         self.scheduler.add_job(
-            self.sync_current_month, 
+            self.sync_history, # 直接复用历史同步逻辑即可补齐当月
             'cron', 
             hour=21, 
             minute=0,
-            id='daily_forexfactory_scraping'
+            timezone=self.NYC,
+            id='daily_forexfactory_sync'
         )
-    def start(self):
-        self._main_loop()
-        app_logger.info("✅ ForexFactory 生产级搜刮器已激活。")
 
     def stop(self):
         if self.scheduler:
-            self.scheduler.remove_job('daily_forexfactory_scraping')
-
-        app_logger.info("🛑 ForexFactory 生产级搜刮器 已退出。")
+            self.scheduler.remove_job('daily_forexfactory_sync')
+        app_logger.info("🛑 ForexFactory 搜刮器停止。")
 
 

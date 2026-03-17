@@ -13,82 +13,92 @@ from src.utils.constants import Fred_Indicator_Code
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 
-class FredScraper:
-    def __init__(self,scheduler:BlockingScheduler):
-        self.api_key = os.getenv('FRED_API_KEY')
-        if not self.api_key:
-            app_logger.warning("❌ 警告：未在 .env 中设置 FRED_API_KEY，FRED 同步将失败。")
-        self.fred = Fred(api_key=self.api_key)
-        self.tz_et = pytz.timezone('US/Eastern')
-        self.scheduler=scheduler
-        self.indicators = Fred_Indicator_Code
-        self.start_date_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+from zoneinfo import ZoneInfo
 
+
+class FredScraper:
+    NYC = ZoneInfo("America/New_York")
+
+    def __init__(self, scheduler: BlockingScheduler):
+        self.api_key = os.getenv("FRED_API_KEY")
+        if not self.api_key:
+            app_logger.warning("❌ 未设置 FRED_API_KEY，FRED 同步将跳过。")
+
+        self.fred = Fred(api_key=self.api_key) if self.api_key else None
+        self.scheduler = scheduler
+        self.indicators = Fred_Indicator_Code
+        self.repo = MarketDataRepo()
+        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
 
     def sync_all(self):
-        
+        """同步所有 FRED 定义的宏观指标"""
+        if not self.fred:
+            return
+
+        app_logger.info("🚀 启动 FRED 宏观指标增量同步...")
         for fred_ticker, internal_code in self.indicators.items():
-            self._sync_single_indicator(fred_ticker, internal_code)
-           
+            try:
+                # 1. 获取库中最新时间戳
+                last_ts = self.repo.get_latest_macro_indicators(internal_code)
+                start_date = (
+                    last_ts.astimezone(self.NYC).strftime("%Y-%m-%d")
+                    if last_ts
+                    else self.COLD_START_DATE
+                )
 
-    def _sync_single_indicator(self, fred_ticker, internal_code):
-        """同步单个指标的逻辑"""
-        
-        last_ts=MarketDataRepo().get_latest_macro_indicators(internal_code)
-        
-        if last_ts :
-            # 增量抓取起点：最后一条记录日期
-            start_date = last_ts.astimezone(self.tz_et).strftime('%Y-%m-%d')
-        else:
-            start_date = self.start_date_str
+                # 2. 抓取数据
+                series = self.fred.get_series(fred_ticker, observation_start=start_date)
+                if series.empty:
+                    continue
 
-        try:
-            # 获取数据 (FRED 仅返回日期)
-            series = self.fred.get_series(fred_ticker, observation_start=start_date)
-            if series.empty: return
+                df = pd.DataFrame(series, columns=["actual_value"]).reset_index()
+                df.rename(columns={"index": "date"}, inplace=True)
 
-            df = pd.DataFrame(series, columns=['actual_value']).reset_index()
-            df.rename(columns={'index': 'date'}, inplace=True)
-            
-            # 💡 策略：将 FRED 只有日期的记录，统一设定为美东 17:00 (5:00 PM) 
-            # 这样可以确保在该时间点后抓取时，数据已经由官方发布
-            df['publish_timestamp'] = pd.to_datetime(df['date']).apply(
-                lambda x: self.tz_et.localize(x.replace(hour=17, minute=0, second=0)).astimezone(pytz.UTC)
-            )
-            df['indicator_code'] = internal_code
-            df['expected_value'] = None 
+                # 3. PIT 模拟：设定为披露日美东 17:00，防止回测偷看
+                df["publish_timestamp"] = pd.to_datetime(df["date"]).apply(
+                    lambda x: (
+                        x.replace(hour=17, minute=0, second=0)
+                        .replace(tzinfo=self.NYC)
+                        .astimezone(pytz.UTC)
+                    )
+                )
+                df["indicator_code"] = internal_code
+                df["expected_value"] = None  # FRED 原始数据通常无预期值
 
-            # 过滤掉重复
-            if last_ts:
-                df = df[df['publish_timestamp'] > last_ts]
+                # 4. 严格增量过滤
+                if last_ts:
+                    df = df[df["publish_timestamp"] > last_ts]
 
-            if not df.empty:
-                UsMacroIndicatorsModel.format_dataframe(df)
-                MarketDataRepo().insert_marco_indicators(df)
-                app_logger.info(f"✅ FRED 指标 {internal_code} ({fred_ticker}) 同步完成，新增 {len(df)} 条。")
+                if not df.empty:
+                    # 格式化并入库
+                    clean_df = UsMacroIndicatorsModel.format_dataframe(pd.DataFrame(df))
+                    self.repo.insert_marco_indicators(clean_df)
+                    app_logger.info(
+                        f"✅ FRED: {internal_code} 同步完成 ({len(clean_df)} 条)。"
+                    )
 
-        except Exception as e:
-            app_logger.error(f"❌ FRED 抓取 {fred_ticker} 失败: {str(e)}")
-
-    def _main_loop(self):
-        app_logger.info("🛡️ FRED 搜刮子线程启动。")
-        self.scheduler.add_job(
-            self.sync_all, 
-            'cron', 
-            hour=17, 
-            minute=15, 
-            id='daily_fred_scraping'
-        )
-       
+            except Exception as e:
+                app_logger.error(f"❌ FRED 同步 {internal_code} 失败: {e}")
 
     def start(self):
         if not self.fred:
-            app_logger.error("❌ FRED API Key 缺失，无法启动同步。")
             return
-        self._main_loop()
-        app_logger.info("✅ FRED 后台搜刮器已激活。")
+
+        # 1. 启动时立即运行增量补数
+        self.sync_all()
+
+        # 2. 每日 17:15 NYC 执行 (确保当日收盘后的指标已发布)
+        self.scheduler.add_job(
+            self.sync_all,
+            "cron",
+            hour=17,
+            minute=15,
+            timezone=self.NYC,
+            id="daily_fred_sync",
+        )
+        app_logger.info("✅ FRED 搜刮器激活。")
 
     def stop(self):
         if self.scheduler:
-            self.scheduler.remove_job('daily_fred_scraping')
-        app_logger.info("🛑 FRED 已退出。")
+            self.scheduler.remove_job("daily_fred_sync")
+        app_logger.info("🛑 FRED 搜刮器停止。")

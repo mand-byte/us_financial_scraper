@@ -161,6 +161,43 @@ class MarketDataRepo:
             app_logger.error(f"查询最新交易日期失败: {e}")
             return os.getenv("SCRAPING_START_DATE", "2014-01-01")
 
+    def get_sync_tasks(self, table_name: str, id_column: str = 'composite_figi') -> pd.DataFrame:
+        """
+        Identify symbols needing sync by joining with a specific _state table.
+        table_name: The base table name (e.g., 'us_stock_fundamentals')
+        id_column: 'cik' or 'composite_figi'
+        """
+        state_table = f"{table_name}_state"
+        query = f"""
+        SELECT 
+            u.ticker, u.cik, u.composite_figi, u.active, u.delisted_date,
+            ifNull(s.state, 0) as sync_state
+        FROM us_stock_universe u
+        LEFT JOIN {state_table} s ON u.{id_column} = s.{id_column}
+        """
+        try:
+            return self.db.client.query_df(query)
+        except Exception as e:
+            app_logger.error(f"Query sync tasks failed for {table_name}: {e}")
+            return pd.DataFrame()
+
+    def update_sync_status(self, table_name: str, identifier: str, id_column: str = 'composite_figi', state: int = 1):
+        """
+        Update completion state for a specific table.
+        Model -> DF -> Repo pattern.
+        """
+        try:
+            from src.model.us_stock_state_model import UsStockStateModel
+            state_table = f"{table_name}_state"
+            
+            df = UsStockStateModel.format_dataframe(identifier, id_column, state)
+            
+            if not df.empty:
+                self.db.client.insert_df(state_table, df)
+                
+        except Exception as e:
+            app_logger.error(f"Update sync status failed for {table_name} [{identifier}]: {e}")
+
     def insert_marco_indicators(self, df: pd.DataFrame):
         self.db.client.insert_df("us_macro_indicators", df)
 
