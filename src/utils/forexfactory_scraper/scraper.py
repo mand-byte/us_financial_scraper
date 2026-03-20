@@ -1,7 +1,7 @@
 import re
 import logging
 import pandas as pd
-import pytz
+from zoneinfo import ZoneInfo
 from datetime import datetime
 from bs4 import BeautifulSoup
 from curl_cffi import requests
@@ -92,7 +92,7 @@ def _parse_html(html_content, year):
             if current_date_str:
                 try:
                     base_dt = datetime.strptime(f"{current_date_str} {year}", "%b %d %Y")
-                    dt = base_dt.replace(tzinfo=pytz.UTC)
+                    dt = base_dt.replace(tzinfo=ZoneInfo("UTC"))
                     if current_time_str:
                         if 'am' in current_time_str or 'pm' in current_time_str:
                             t_match = re.search(r'(\d{1,2}):(\d{2})(am|pm)', current_time_str)

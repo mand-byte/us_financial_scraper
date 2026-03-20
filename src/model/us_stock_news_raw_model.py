@@ -1,59 +1,77 @@
+from src.model.base_clickhouse_model import BaseClickHouseModel
 import pandas as pd
-import hashlib
-from pydantic import  Field
-from src.model import BaseClickHouseModel
-from datetime import datetime
-from typing import Optional, Dict
+from typing import ClassVar, Dict, Any
 
 
-# ==========================================
-# 10. 个股新闻原始表
-# ==========================================
 class UsStockNewsRawModel(BaseClickHouseModel):
-    news_id: str = Field(...)
-    composite_figi: str = Field(...)
-    publish_timestamp: datetime = Field(...)
-    title: str = Field(default="")
-    description: str = Field(default="")
-    update_time: Optional[datetime] = Field(default=None)
+    table_name: ClassVar[str] = "us_stock_news_raw"
+
+    __DDL__: ClassVar[str] = """
+            CREATE TABLE IF NOT EXISTS us_stock_news_raw
+            (
+                news_id String,                          -- 建议用 URL 或 (标题+时间) 的 MD5 哈希
+                composite_figi String,
+                published_utc DateTime64(3, 'UTC'),
+                title String CODEC(ZSTD(3)),             -- 长文本开启 ZSTD 高级压缩
+                description String CODEC(ZSTD(3)),
+                update_time DateTime64(3, 'UTC') DEFAULT now64(3)
+            ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY (composite_figi, published_utc, news_id)
+        """
+
+    SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {
+        "news_id": {"type": "str"},
+        "composite_figi": {"type": "str"},
+        "published_utc": {"type": "datetime", "tz": "UTC"},
+        "title": {"type": "str"},
+        "description": {"type": "str"},
+        "update_time": {"type": "datetime", "tz": "UTC"},
+    }
+    MAX_PUBLISHED_UTC_QUERY_SQL = (
+        "SELECT max(published_utc) as last_ts FROM us_stock_news_raw"
+    )
 
     @classmethod
-    def format_dataframe(cls, df: pd.DataFrame, universe_map: Dict[str, str]) -> pd.DataFrame:
-        """
-        处理 Massive API 返回的新闻 DataFrame：
-        1. 按 ticker 分割 (Explode)
-        2. 映射 composite_figi
-        3. 生成 news_id (title + timestamp 的 MD5)
-        4. 对齐表结构
-        """
+    def format_dataframe(cls, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
-            return df
+            return pd.DataFrame()
+        df = df.copy()
 
-        # 1. 🌟 按 ticker 展开
-        # massive_api 返回的 tickers 是 "AAPL,MSFT" 格式的字符串
-        df["ticker_list"] = df["tickers"].str.split(",")
-        df = df.explode("ticker_list")
-        df = df.rename(columns={"ticker_list": "ticker"})
+        for col, meta in cls.SCHEMA_CLEAN.items():
+            if col not in df.columns:
+                df[col] = meta.get("default", None)
 
-        # 2. 🌟 映射 composite_figi
-        df["composite_figi"] = df["ticker"].map(universe_map)
-        # 丢弃无法映射 figi 的新闻（可能属于非美股或异常标的）
-        df = df.dropna(subset=["composite_figi"])
+        date_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "date"]
+        for col in date_cols:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
 
-        # 3. 🌟 时间戳对齐
-        df["publish_timestamp"] = pd.to_datetime(df["published_utc"], utc=True)
+        time_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "datetime"]
+        for col in time_cols:
+            if col in df.columns:
+                df[col] = pd.to_datetime(
+                    df[col], errors="coerce", utc=True
+                ).dt.tz_localize(None)
 
-        # 4. 🌟 生成 news_id
-        # 使用 title + published_utc 作为唯一标识生成 MD5，保证 ReplacingMergeTree 幂等
-        def generate_id(row):
-            payload = f"{row['title']}_{row['published_utc']}_{row['composite_figi']}"
-            return hashlib.md5(payload.encode("utf-8")).hexdigest()
+        str_cols = {
+            k: v.get("len") for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "str"
+        }
+        for col, length in str_cols.items():
+            if col in df.columns:
+                df[col] = df[col].astype(str)
+                if length:
+                    df[col] = df[col].str.slice(0, length)
 
-        df["news_id"] = df.apply(generate_id, axis=1)
+        float_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "float64"]
+        for col in float_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
 
-        # 5. 补全系统列
-        df["update_time"] = pd.Timestamp.now(tz="UTC")
+        int_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if "int" in v["type"]]
+        for col in int_cols:
+            if col in df.columns:
+                df[col] = (
+                    pd.to_numeric(df[col], errors="coerce").fillna(0).astype("uint64")
+                )
 
-        # 6. 对齐模型定义的列
-        cols = cls.get_columns()
-        return df[cols].copy()
+        return df[list(cls.SCHEMA_CLEAN.keys())]

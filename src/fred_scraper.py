@@ -1,7 +1,7 @@
 import os
 import time
 import pandas as pd
-import pytz
+from zoneinfo import ZoneInfo
 import threading
 from datetime import datetime, timedelta
 from fredapi import Fred
@@ -59,7 +59,7 @@ class FredScraper:
                     lambda x: (
                         x.replace(hour=17, minute=0, second=0)
                         .replace(tzinfo=self.NYC)
-                        .astimezone(pytz.UTC)
+                        .astimezone(ZoneInfo("UTC"))
                     )
                 )
                 df["indicator_code"] = internal_code

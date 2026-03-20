@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 ================================================================================
-Massive 新闻原始搜刮器 (MassiveNewsFetcher) - 需求与逻辑文档
+Massive 新闻原始搜刮器 (MassiveNewsScraper) - 需求与逻辑文档
 ================================================================================
 
 [核心需求 - 已实现]
-1. 数据源: 
+1. 数据源:
    - Massive API v2 News (/v2/reference/news).
    - 模式: 流式抓取 (Generator)，按页入库。
 2. 状态追踪 (Smart Sync):
@@ -21,10 +21,9 @@ Massive 新闻原始搜刮器 (MassiveNewsFetcher) - 需求与逻辑文档
 """
 
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
-import pytz
-from typing import Optional
+
 from apscheduler.schedulers.blocking import BlockingScheduler
 from src.api.massive_api import MassiveApi
 from src.dao.fundamental_repo import FundamentalRepo
@@ -33,7 +32,8 @@ from src.model.us_stock_news_raw_model import UsStockNewsRawModel
 from src.utils.logger import app_logger as logger
 import os
 
-class MassiveNewsFetcher:
+
+class MassiveNewsScraper:
     NYC = ZoneInfo("America/New_York")
 
     def __init__(self, scheduler: BlockingScheduler):
@@ -42,110 +42,109 @@ class MassiveNewsFetcher:
         self.market_repo = MarketDataRepo()
         self.scheduler = scheduler
         self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+        self.API_MAX_LIMIT = 1000
 
     def start(self):
         """异步注册任务并触发初始化补数"""
         # 1. 🌟 每日滚动重刷 (每天一次，活跃标的回溯 3 天)
         self.scheduler.add_job(
-            self.refresh_recent_news, 
-            'cron', 
-            hour=20, 
-            minute=0, 
-            timezone=self.NYC, 
-            id="rolling_news_refresh"
-        )
-
-        # 2. 启动时立即执行一次
-        self.scheduler.add_job(
-            self.refresh_recent_news, 
-            next_run_time=datetime.now(self.NYC), 
-            id="rolling_news_refresh",
-            replace_existing=True
+            self.fectch_news,
+            "cron",
+            hour=20,
+            minute=0,
+            timezone=self.NYC,
+            id="fectch_news",
+            next_run_time=datetime.now(self.NYC),
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
         )
         logger.info("✅ Massive 新闻搜刮器已启动 (单日回刷3天模式)。")
 
     def stop(self):
         logger.info("🛑 Massive 新闻搜刮器停止。")
 
-    def sync_latest_news(self, backfill_days: Optional[int] = None):
-        """
-        全市场新闻同步逻辑：
-        1. 活跃标的：如果 backfill_days 有值，从回溯点开始同步；否则从全局最大时间戳增量同步。
-        2. 退市标的：如果状态为 0，则执行该标的历史追溯，完成后标记状态表。
-        """
-        logger.info(f"🚀 启动新闻智能同步任务 (模式: {backfill_days or '增量'})...")
-        
-        try:
-            # 1. 获取任务清单
-            tasks_df = self.market_repo.get_sync_tasks('us_stock_news_raw', id_column='composite_figi')
-            if tasks_df.empty: return
+    def fectch_news(self):
 
-            universe_map = dict(zip(tasks_df["ticker"], tasks_df["composite_figi"]))
-            
-            # A. 活跃标的：增量或滚动逻辑
-            active_tasks = tasks_df[tasks_df['active'] == 1]
-            if not active_tasks.empty:
-                if backfill_days:
-                    # 滚动重刷：从 backfill_days 前开始
-                    start_dt = datetime.now(pytz.UTC) - timedelta(days=backfill_days)
-                else:
-                    # 普通增量：从库中最大时间开始
-                    start_dt = self.fundamental_repo.get_global_latest_news_timestamp()
-                
-                start_date_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-                
-                for page_df in self.massive.get_stock_news(
-                    ticker=None,
-                    published_utc_type="published_utc.gt",
-                    date=start_date_str,
-                    order="asc",
-                    limit=1000
-                ):
-                    if page_df.empty: continue
-                    clean_df = UsStockNewsRawModel.format_dataframe(page_df, universe_map)
-                    if not clean_df.empty:
-                        self.fundamental_repo.insert_stock_news_raw(clean_df)
+        last_ts = self.fundamental_repo.get_global_latest_news_timestamp()
+        ts = last_ts.tz_convert("UTC") if last_ts.tzinfo else last_ts.tz_localize("UTC")
+        date_raw = self.massive.get_stock_news(
+            published_utc_type="published_utc.gt", date=ts.isoformat()
+        )
+        if date_raw.empty:
+            logger.info("无新增新闻。")
+            return
 
-            # B. 退市标的：补齐历史逻辑 (仅针对 sync_state == 0)
-            delisted_pending = tasks_df[(tasks_df['active'] == 0) & (tasks_df['sync_state'] == 0)]
-            for row in delisted_pending.itertuples():
-                try:
-                    last_dt = self.fundamental_repo.get_latest_stock_news_raw_timestamp(row.cik)
-                    delisted_dt = pd.to_datetime(row.delisted_date, utc=True)
-                    
-                    if last_dt + timedelta(hours=8) >= delisted_dt:
-                        self.market_repo.update_sync_status('us_stock_news_raw', row.composite_figi, 'composite_figi', 1)
-                        continue
-                        
-                    start_str = last_dt.strftime('%Y-%m-%d')
-                    
-                    for page_df in self.massive.get_stock_news(
-                        ticker=row.ticker,
-                        published_utc_type="published_utc.gt",
-                        date=start_str,
-                        order="asc",
-                        limit=1000
-                    ):
-                        if page_df.empty: break
-                        page_df['published_utc_dt'] = pd.to_datetime(page_df['published_utc'])
-                        page_df = page_df[page_df['published_utc_dt'] <= delisted_dt]
-                        
-                        if page_df.empty: break
-                        
-                        clean_df = UsStockNewsRawModel.format_dataframe(page_df, universe_map)
-                        if not clean_df.empty:
-                            self.fundamental_repo.insert_stock_news_raw(clean_df)
-                    
-                    self.market_repo.update_sync_status('us_stock_news_raw', row.composite_figi, 'composite_figi', 1)
-                    logger.info(f"退市标的 {row.ticker} 新闻历史补齐。")
-                except Exception as e:
-                    logger.error(f"退市标的 {row.ticker} 新闻同步异常: {e}")
+        # API 返回的 news 数据中包含 tickers (列表)，id (新闻ID)，我们需要先展开 tickers
+        if "tickers" in date_raw.columns:
+            date_raw = (
+                date_raw.explode("tickers")
+                .rename(columns={"tickers": "ticker"})
+                .dropna(subset=["ticker"])
+            )
+        else:
+            logger.info("未发现 tickers 字段。")
+            return
 
-            logger.info(f"全市场新闻同步任务执行完毕。")
+        if date_raw.empty:
+            logger.info("无有效 tickers 数据。")
+            return
 
-        except Exception as e:
-            logger.error(f"全市场新闻同步失败: {e}")
+        # 提取 unique tickers 用于查询映射
+        unique_tickers = date_raw["ticker"].unique().tolist()
+        mappings_df = self.market_repo.get_figi_mapping_history_by_tickers(
+            unique_tickers
+        )
 
-    def refresh_recent_news(self):
-        """滚动重刷活跃标的 3 天新闻"""
-        self.sync_latest_news(backfill_days=3)
+        if mappings_df.empty:
+            logger.info("无有效匹配 FIGI 历史映射的新闻。")
+            return
+
+        # 准备时间对齐: mappings_df 的 date 为精确到天
+        mappings_df["date"] = pd.to_datetime(mappings_df["date"]).dt.tz_localize(None)
+        mappings_df = mappings_df.sort_values("date")
+
+        # API 的 published_utc 是类似 '2024-03-12T15:20:00Z'
+        date_raw["published_utc_dt"] = pd.to_datetime(
+            date_raw["published_utc"], utc=True
+        ).dt.tz_localize(None)
+        date_raw = date_raw.sort_values("published_utc_dt")
+
+        # 进行 Point-in-Time 倒退匹配
+        date_raw = pd.merge_asof(
+            date_raw,
+            mappings_df[["ticker", "date", "composite_figi"]],
+            left_on="published_utc_dt",
+            right_on="date",
+            by="ticker",
+            direction="backward",
+        )
+
+        # 针对在首次有映射之前的新闻，启用向前匹配作为退路
+        missing_mask = date_raw["composite_figi"].isna()
+        if missing_mask.any():
+            fallback_df = pd.merge_asof(
+                date_raw[missing_mask].drop(columns=["composite_figi", "date"]),
+                mappings_df[["ticker", "date", "composite_figi"]],
+                left_on="published_utc_dt",
+                right_on="date",
+                by="ticker",
+                direction="forward",
+            )
+            date_raw.loc[missing_mask, "composite_figi"] = fallback_df[
+                "composite_figi"
+            ].values
+
+        date_raw = date_raw.dropna(subset=["composite_figi"])
+
+        if date_raw.empty:
+            logger.info("无有效匹配 FIGI 的新闻。")
+            return
+
+        # 将 id 重命名为 news_id 用于数据库存储
+        if "id" in date_raw.columns:
+            date_raw = date_raw.rename(columns={"id": "news_id"})
+
+        data = UsStockNewsRawModel.format_dataframe(date_raw)
+        if not data.empty:
+            self.fundamental_repo.insert_stock_news_raw(data)

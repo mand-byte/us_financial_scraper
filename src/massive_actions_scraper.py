@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ================================================================================
-Massive 公司行动搜刮器 (MassiveActionsFetcher)
+Massive 公司行动搜刮器 (MassiveActionsScraper)
 ================================================================================
 
 [核心需求 - 已实现]
@@ -18,21 +18,22 @@ Massive 公司行动搜刮器 (MassiveActionsFetcher)
 """
 
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
-import pytz
 from typing import Optional
 from apscheduler.schedulers.blocking import BlockingScheduler
 from src.api.massive_api import MassiveApi
 from src.dao.fundamental_repo import FundamentalRepo
 from src.dao.market_data_repo import MarketDataRepo
-from src.model.us_stock_actions_model import UsStockDividendsModel, UsStockSplitsModel
+from src.model.us_stock_dividends_model import UsStockDividendsModel
+from src.model.us_stock_splits_model import UsStockSplitsModel
 from src.utils.logger import app_logger as logger
 import os
-import concurrent.futures
 
-class MassiveActionsFetcher:
+
+class MassiveActionsScraper:
     NYC = ZoneInfo("America/New_York")
+    MASSIVE_API_ACTIONS_LIMIT = 5000
 
     def __init__(self, scheduler: Optional[BlockingScheduler] = None):
         self.massive = MassiveApi()
@@ -44,163 +45,167 @@ class MassiveActionsFetcher:
     def start(self):
         if self.scheduler:
             self.scheduler.add_job(
-                self.refresh_recent_actions, 
-                'cron', 
-                hour=20, 
-                minute=30, 
-                timezone=self.NYC, 
-                id="rolling_actions_refresh"
-            )
-
-            self.scheduler.add_job(
-                self.refresh_recent_actions, 
-                next_run_time=datetime.now(self.NYC), 
+                self.refresh_recent_actions,
+                "cron",
+                hour=20,
+                minute=30,
+                timezone=self.NYC,
                 id="rolling_actions_refresh",
-                replace_existing=True
+                next_run_time=datetime.now(self.NYC),  # 启动时立即执行一次
+                max_instances=1,  # 实例锁互斥：前一个没跑完则跳过新触发
+                coalesce=True,  # 防止积压多批次
+                replace_existing=True,
             )
             logger.info("✅ Massive 公司行动搜刮器已启动 (单日回刷3天模式)。")
 
     def stop(self):
         logger.info("🛑 Massive 公司行动搜刮器停止。")
 
-    def _sync_dividend_for_ticker(self, task_data: tuple):
-        ticker, composite_figi, delisted_date, active, sync_state, backfill_days = task_data
-        try:
-            # 1. 判定边界
-            if not active and sync_state == 1: return
-            
-            last_date = self.fundamental_repo.get_latest_stock_dividends_date(composite_figi)
-            
-            if not active and pd.notna(delisted_date):
-                delisted_dt = pd.to_datetime(delisted_date).replace(tzinfo=pytz.UTC).date()
-                # 数据时间 + 1天(对于date来说) >= 下市时间 就改 state 标记并跳过
-                if last_date + timedelta(days=1) >= delisted_dt:
-                    self.market_repo.update_sync_status('us_stock_dividends', composite_figi, 'composite_figi', 1)
-                    return
-            else:
-                delisted_dt = None
+    def fetch_dividends(self):
+        last_date = self.fundamental_repo.get_global_latest_stock_dividends_date()
+        date_str = last_date.strftime("%Y-%m-%d")
 
-            # 活跃标的：如果不缺数据（距今3天内），说明每日增量已覆盖
-            if active and last_date >= (datetime.now(self.NYC).date() - timedelta(days=3)):
-                return
+        logger.info(f"🚀 拉取派息数据 (起: {date_str})...")
+        df_raw = self.massive.get_dividends(
+            ex_dividend_date=date_str, limit=self.MASSIVE_API_ACTIONS_LIMIT
+        )
 
-            if active and backfill_days:
-                start_dt = (datetime.now(self.NYC) - timedelta(days=backfill_days)).date()
-                start_date_str = max(start_dt, last_date).strftime('%Y-%m-%d')
-            else:
-                start_date_str = last_date.strftime('%Y-%m-%d')
+        if df_raw is None or df_raw.empty:
+            logger.info("派息数据无新增。")
+            return
 
-            df_raw = self.massive.get_dividends(ticker=ticker, ex_dividend_date=start_date_str, limit=5000)
-            
-            if df_raw.empty:
-                if not active: self.market_repo.update_sync_status('us_stock_dividends', composite_figi, 'composite_figi', 1)
-                return
+        if "ticker" not in df_raw.columns:
+            return
 
-            if delisted_dt:
-                df_raw['ex_dividend_date'] = pd.to_datetime(df_raw['ex_dividend_date']).dt.date
-                df_raw = df_raw[df_raw['ex_dividend_date'] <= delisted_dt]
-                if df_raw.empty:
-                    if not active: self.market_repo.update_sync_status('us_stock_dividends', composite_figi, 'composite_figi', 1)
-                    return
+        df_raw = df_raw.dropna(subset=["ticker"])
+        if df_raw.empty:
+            return
 
-            clean_df = UsStockDividendsModel.format_dataframe(df_raw, composite_figi)
-            if not clean_df.empty:
-                self.fundamental_repo.insert_stock_dividends(clean_df)
+        unique_tickers = df_raw["ticker"].unique().tolist()
+        mappings_df = self.market_repo.get_figi_mapping_history_by_tickers(
+            unique_tickers
+        )
 
-            if not active:
-                self.market_repo.update_sync_status('us_stock_dividends', composite_figi, 'composite_figi', 1)
-                
-        except Exception as e:
-            logger.error(f"[{ticker}] 派息同步异常: {e}")
+        if mappings_df.empty:
+            logger.info("无有效匹配 FIGI 的派息数据。")
+            return
 
-    def _sync_split_for_ticker(self, task_data: tuple):
-        ticker, composite_figi, delisted_date, active, sync_state, backfill_days = task_data
-        try:
-            # 1. 判定边界
-            if not active and sync_state == 1: return
-            
-            last_date = self.fundamental_repo.get_latest_stock_splits_date(composite_figi)
-            
-            if not active and pd.notna(delisted_date):
-                delisted_dt = pd.to_datetime(delisted_date).replace(tzinfo=pytz.UTC).date()
-                if last_date + timedelta(days=1) >= delisted_dt:
-                    self.market_repo.update_sync_status('us_stock_splits', composite_figi, 'composite_figi', 1)
-                    return
-            else:
-                delisted_dt = None
+        mappings_df["date"] = pd.to_datetime(mappings_df["date"]).dt.tz_localize(None)
+        mappings_df = mappings_df.sort_values("date")
 
-            # 活跃标的：如果不缺数据（距今3天内），跳过
-            if active and last_date >= (datetime.now(self.NYC).date() - timedelta(days=3)):
-                return
+        df_raw["ex_dividend_date_dt"] = pd.to_datetime(
+            df_raw["ex_dividend_date"]
+        ).dt.tz_localize(None)
+        df_raw = df_raw.sort_values("ex_dividend_date_dt")
 
-            if active and backfill_days:
-                start_dt = (datetime.now(self.NYC) - timedelta(days=backfill_days)).date()
-                start_date_str = max(start_dt, last_date).strftime('%Y-%m-%d')
-            else:
-                start_date_str = last_date.strftime('%Y-%m-%d')
+        df_raw = pd.merge_asof(
+            df_raw,
+            mappings_df[["ticker", "date", "composite_figi"]],
+            left_on="ex_dividend_date_dt",
+            right_on="date",
+            by="ticker",
+            direction="backward",
+        )
 
-            df_raw = self.massive.get_splits(ticker=ticker, execution_date=start_date_str, limit=5000)
-            
-            if df_raw.empty:
-                if not active: self.market_repo.update_sync_status('us_stock_splits', composite_figi, 'composite_figi', 1)
-                return
+        missing_mask = df_raw["composite_figi"].isna()
+        if missing_mask.any():
+            fallback_df = pd.merge_asof(
+                df_raw[missing_mask].drop(columns=["composite_figi", "date"]),
+                mappings_df[["ticker", "date", "composite_figi"]],
+                left_on="ex_dividend_date_dt",
+                right_on="date",
+                by="ticker",
+                direction="forward",
+            )
+            df_raw.loc[missing_mask, "composite_figi"] = fallback_df[
+                "composite_figi"
+            ].values
 
-            if delisted_dt:
-                df_raw['execution_date'] = pd.to_datetime(df_raw['execution_date']).dt.date
-                df_raw = df_raw[df_raw['execution_date'] <= delisted_dt]
-                if df_raw.empty:
-                    if not active: self.market_repo.update_sync_status('us_stock_splits', composite_figi, 'composite_figi', 1)
-                    return
+        df_raw = df_raw.dropna(subset=["composite_figi"])
+        if df_raw.empty:
+            logger.info("无有效匹配 FIGI 的派息数据。")
+            return
 
-            clean_df = UsStockSplitsModel.format_dataframe(df_raw, composite_figi)
-            if not clean_df.empty:
-                self.fundamental_repo.insert_stock_splits(clean_df)
+        clean_df = UsStockDividendsModel.format_dataframe(df_raw)
+        if not clean_df.empty:
+            self.fundamental_repo.insert_stock_dividends(clean_df)
+        logger.info(f"派息数据拉取完成，新增 {len(clean_df)} 条记录。")
 
-            if not active:
-                self.market_repo.update_sync_status('us_stock_splits', composite_figi, 'composite_figi', 1)
-                
-        except Exception as e:
-            logger.error(f"[{ticker}] 拆分同步异常: {e}")
+    def fetch_splits(self):
+        last_date = self.fundamental_repo.get_global_latest_stock_splits_date()
+        date_str = last_date.strftime("%Y-%m-%d")
 
-    def sync_actions(self, backfill_days: Optional[int] = None):
-        max_workers = 10
-        logger.info(f"🚀 启动公司行动智能同步 (模式: {backfill_days or '增量'})...")
-        
-        # 1. 派息任务
-        tasks_div = self.market_repo.get_sync_tasks('us_stock_dividends', id_column='composite_figi')
-        if not tasks_div.empty:
-            sync_mask = (tasks_div['active'] == 1) | ((tasks_div['active'] == 0) & (tasks_div['sync_state'] == 0))
-            filtered_div = tasks_div[sync_mask].dropna(subset=['ticker'])
-            
-            task_list_div = [
-                (r.ticker, r.composite_figi, r.delisted_date, r.active, r.sync_state, backfill_days) 
-                for r in filtered_div.itertuples(index=False)
-            ]
-            
-            logger.info(f"派息任务: 准备处理 {len(task_list_div)} 个标的。")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                executor.map(self._sync_dividend_for_ticker, task_list_div)
+        logger.info(f"🚀 拉取股票拆分数据 (起: {date_str})...")
+        df_raw = self.massive.get_splits(
+            ticker=None, execution_date=date_str, limit=self.MASSIVE_API_ACTIONS_LIMIT
+        )
 
-        # 2. 拆分任务
-        tasks_split = self.market_repo.get_sync_tasks('us_stock_splits', id_column='composite_figi')
-        if not tasks_split.empty:
-            sync_mask = (tasks_split['active'] == 1) | ((tasks_split['active'] == 0) & (tasks_split['sync_state'] == 0))
-            filtered_split = tasks_split[sync_mask].dropna(subset=['ticker'])
-            
-            task_list_split = [
-                (r.ticker, r.composite_figi, r.delisted_date, r.active, r.sync_state, backfill_days) 
-                for r in filtered_split.itertuples(index=False)
-            ]
-            
-            logger.info(f"拆分任务: 准备处理 {len(task_list_split)} 个标的。")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                executor.map(self._sync_split_for_ticker, task_list_split)
+        if df_raw is None or df_raw.empty:
+            logger.info("拆分数据无新增。")
+            return
 
-        logger.info("✅ 公司行动同步完毕。")
+        if "ticker" not in df_raw.columns:
+            return
+
+        df_raw = df_raw.dropna(subset=["ticker"])
+        if df_raw.empty:
+            return
+
+        unique_tickers = df_raw["ticker"].unique().tolist()
+        mappings_df = self.market_repo.get_figi_mapping_history_by_tickers(
+            unique_tickers
+        )
+
+        if mappings_df.empty:
+            logger.info("无有效匹配 FIGI 的拆分数据。")
+            return
+
+        mappings_df["date"] = pd.to_datetime(mappings_df["date"]).dt.tz_localize(None)
+        mappings_df = mappings_df.sort_values("date")
+
+        df_raw["execution_date_dt"] = pd.to_datetime(
+            df_raw["execution_date"]
+        ).dt.tz_localize(None)
+        df_raw = df_raw.sort_values("execution_date_dt")
+
+        df_raw = pd.merge_asof(
+            df_raw,
+            mappings_df[["ticker", "date", "composite_figi"]],
+            left_on="execution_date_dt",
+            right_on="date",
+            by="ticker",
+            direction="backward",
+        )
+
+        missing_mask = df_raw["composite_figi"].isna()
+        if missing_mask.any():
+            fallback_df = pd.merge_asof(
+                df_raw[missing_mask].drop(columns=["composite_figi", "date"]),
+                mappings_df[["ticker", "date", "composite_figi"]],
+                left_on="execution_date_dt",
+                right_on="date",
+                by="ticker",
+                direction="forward",
+            )
+            df_raw.loc[missing_mask, "composite_figi"] = fallback_df[
+                "composite_figi"
+            ].values
+
+        df_raw = df_raw.dropna(subset=["composite_figi"])
+        if df_raw.empty:
+            logger.info("无有效匹配 FIGI 的拆分数据。")
+            return
+
+        clean_df = UsStockSplitsModel.format_dataframe(df_raw)
+        if not clean_df.empty:
+            self.fundamental_repo.insert_stock_splits(clean_df)
+        logger.info(f"股票拆分数据拉取完成，新增 {len(clean_df)} 条记录。")
 
     def refresh_recent_actions(self):
-        self.sync_actions(backfill_days=3)
+        self.fetch_dividends()
+        self.fetch_splits()
+
 
 if __name__ == "__main__":
-    scraper = MassiveActionsFetcher()
+    scraper = MassiveActionsScraper()
     scraper.refresh_recent_actions()

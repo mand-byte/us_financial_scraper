@@ -39,72 +39,63 @@ class MassiveBenchmarkScraper:
 
     def start(self):
         if self.scheduler:
-            # 1. 🌟 每日滚动重刷 (每天一次，每次回溯 3 天)
+            # 1. 🌟 
             self.scheduler.add_job(
-                self.refresh_recent_benchmarks, 
+                self.fetch_benchmark_etf_klines, 
                 'cron', 
-                hour=20, 
+                hour='10-16', 
                 minute=0, 
+                day_of_week="mon-fri",
                 timezone=self.NYC, 
-                id="rolling_benchmark_refresh"
+                id="fetch_benchmark_etf_klines",
+                next_run_time=datetime.now(self.NYC),  # 启动时立即执行一次
+                max_instances=1,   # 只允许一个实例，前一个没跑完则跳过新触发
+                coalesce=True,     # 触发积压时合并为一次执行
+                replace_existing=True,
             )
 
-            # 2. 启动时立即执行一次
-            self.scheduler.add_job(
-                self.refresh_recent_benchmarks, 
-                next_run_time=datetime.now(self.NYC), 
-                id="rolling_benchmark_refresh",
-                replace_existing=True
-            )
-            logger.info(f"✅ Massive 基准 ETF 搜刮器已启动 (单日回刷3天模式)。")
-
-    def stop(self):
-        logger.info("🛑 Massive 基准 ETF 搜刮器停止。")
-
-    def sync_benchmarks(self, backfill_days: Optional[int] = None):
-        """同步核心基准 ETF 历史与增量"""
+            
+            logger.info(f"✅ Massive 基准 ETF 搜刮器已启动 。")
+    def fetch_benchmark_etf_klines(self):
+        """从数据库最新时间戳开始，拉取到当前时间的增量 K 线数据"""
         now_nyc = datetime.now(self.NYC)
+        end_ms = int(now_nyc.timestamp() * 1000)
+
         for ticker in self.BENCHMARKS:
             try:
-                # 1. 判定起点
-                if backfill_days:
-                    start_dt = now_nyc - timedelta(days=backfill_days)
-                    last_ms = int(start_dt.timestamp() * 1000)
-                else:
-                    last_dt = self.repo.get_latest_benchmark_etf_klines(ticker)
-                    last_ms = int(last_dt.timestamp() * 1000)
-                
-                # 2. 确定目标结束时间
-                end_ms = int(now_nyc.timestamp() * 1000)
-                
-                if last_ms >= (end_ms - 60000):
+                # 1. 获取该 ticker 在数据库中的最新时间戳
+                last_dt = self.repo.get_latest_benchmark_etf_klines(ticker)
+                start_ms = int(last_dt.timestamp() * 1000) + 1  # +1ms 避免重复
+
+                # 如果最新记录距当前不足 1 分钟，说明已经是最新的
+                if start_ms >= end_ms - 60000:
+                    logger.info(f"ℹ️ 基准 {ticker} 数据已是最新，跳过。")
                     continue
 
-                logger.info(f"🚀 正在同步基准 {ticker} (回溯: {backfill_days or '增量'}): {datetime.fromtimestamp(last_ms/1000, tz=self.NYC)} -> Now")
-                
-                # 3. 流式抓取并存入
+                logger.info(f"🚀 正在同步基准 {ticker}: {last_dt} -> Now")
+
+                # 2. 流式拉取并逐页入库（get_historical_klines 是生成器）
                 for page_df in self.massive.get_historical_klines(
-                    ticker=ticker, 
-                    multiplier=self.KLINE_SPAN, 
-                    start=str(last_ms + 1), 
+                    ticker=ticker,
+                    multiplier=self.KLINE_SPAN,
+                    start=str(start_ms),
                     end=str(end_ms),
-                    adjusted=False  # 🌟 核心量化原则：底层永远存原始数据
+                    adjusted=False,
                 ):
-                    if page_df.empty: continue
-                    
+                    if page_df is None:
+                        logger.warning(f"⚠️ API failed for {ticker}. Skipping.")
+                        break
+                    if page_df.empty:
+                        continue
+
                     clean_df = BenchmarkEtfKlineModel.format_dataframe(page_df, ticker)
                     self.repo.insert_benchmark_etf_klines(clean_df)
-                    
+
                 logger.info(f"✅ 基准 {ticker} 同步完成。")
 
             except Exception as e:
-                logger.error(f"同步基准 {ticker} 失败: {e}")
+                logger.error(f"❌ 同步基准 {ticker} 失败: {e}")
+    def stop(self):
+        logger.info("🛑 Massive 基准 ETF 搜刮器停止。")
 
-    def refresh_recent_benchmarks(self):
-        """强制回溯最近 3 天基准数据"""
-        logger.info("📅 执行最近 3 天基准 ETF 滚动重刷...")
-        self.sync_benchmarks(backfill_days=3)
 
-if __name__ == "__main__":
-    scraper = MassiveBenchmarkScraper()
-    scraper.refresh_recent_benchmarks()

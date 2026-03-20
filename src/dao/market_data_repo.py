@@ -1,27 +1,29 @@
 # -*- coding: utf-8 -*-
-# 负责 表1,2,6,7,11 (行情与宏观)
+
 
 from .clickhouse_manager import get_db_manager
 import pandas as pd
 from src.utils.logger import app_logger
 import os
 from datetime import datetime
-import pytz
+from zoneinfo import ZoneInfo
 
 
 class MarketDataRepo:
     def __init__(self):
         self.db = get_db_manager()  # 初始化客户端
 
-    def insert_us_stock_universe(self, df: pd.DataFrame):
+    def insert_stock_universe(self, df: pd.DataFrame):
         try:
-            self.db.client.insert_df("us_stock_universe", df)
+            self.db.client.insert_df("stock_universe", df)
         except Exception as e:
             app_logger.error(f"插入股票列表数据失败: {e}")
             raise e
 
     def get_active_tickers(self) -> pd.DataFrame:
-        query = "SELECT * FROM us_stock_universe WHERE active = 1"
+        from src.model.us_stock_universe_model import UsStockUniverseModel
+
+        query = UsStockUniverseModel.QUERY_ACTIVE_TICKERS_SQL
         try:
             res = self.db.client.query_df(query)
             return res
@@ -30,7 +32,9 @@ class MarketDataRepo:
             return pd.DataFrame()
 
     def get_delisted_tickers(self) -> pd.DataFrame:
-        query = "SELECT * FROM us_stock_universe WHERE WHERE active = 1"
+        from src.model.us_stock_universe_model import UsStockUniverseModel
+
+        query = UsStockUniverseModel.QUERY_DELISTED_TICKERS_SQL
         try:
             res = self.db.client.query_df(query)
             return res
@@ -39,7 +43,9 @@ class MarketDataRepo:
             return pd.DataFrame()
 
     def get_universe_tickers(self) -> pd.DataFrame:
-        query = "SELECT * FROM us_stock_universe"
+        from src.model.us_stock_universe_model import UsStockUniverseModel
+
+        query = UsStockUniverseModel.QUERY_ALL_TICKERS_SQL
         try:
             res = self.db.client.query_df(query)
             return res
@@ -47,27 +53,24 @@ class MarketDataRepo:
             app_logger.error(f"查询股票列表失败: {e}")
             return pd.DataFrame()
 
-    def get_kline_sync_tasks(self) -> pd.DataFrame:
+    def get_sync_tasks(
+        self, table_name: str, id_column: str = "composite_figi"
+    ) -> pd.DataFrame:
         """
-        聚合查询：获取所有标的在数据库中的分钟 K 线时间边界。
-        返回包含: ticker, composite_figi, active, delisted_date, first_ts, last_ts
+        Identify symbols needing sync by joining with a specific _state table.
+        table_name: The base table name (e.g., 'us_stock_fundamentals')
+        id_column: 'cik' or 'composite_figi'
         """
-        query = """
-        SELECT 
-            u.ticker, 
-            u.composite_figi, 
-            u.active, 
-            u.delisted_date,
-            MIN(k.timestamp) as first_ts,
-            MAX(k.timestamp) as last_ts
-        FROM us_stock_universe u
-        LEFT JOIN us_minutes_klines k ON u.composite_figi = k.composite_figi
-        GROUP BY u.ticker, u.composite_figi, u.active, u.delisted_date
-        """
+        state_table = f"{table_name}_state"
+        from src.model.us_stock_universe_model import UsStockUniverseModel
+
+        query = UsStockUniverseModel.QUERY_SYNC_TASKS_SQL.format(
+            state_table=state_table, id_column=id_column
+        )
         try:
             return self.db.client.query_df(query)
         except Exception as e:
-            app_logger.error(f"查询 K 线同步任务清单失败: {e}")
+            app_logger.error(f"Query sync tasks failed for {table_name}: {e}")
             return pd.DataFrame()
 
     def insert_stock_minutes_klines(self, df: pd.DataFrame):
@@ -78,26 +81,68 @@ class MarketDataRepo:
             raise e
 
     def get_all_stocks_latest_ts_df_by_group(self) -> pd.DataFrame:
-        query = "SELECT composite_figi, MAX(timestamp) as last_ts FROM klines GROUP BY composite_figi"
+        from src.model.us_stock_minutes_kline_model import UsStockMinutesKlineModel
+
+        query = UsStockMinutesKlineModel.QUERY_LATEST_TS_BY_GROUP_SQL
         try:
             latest_ts_df = self.db.client.query_df(query)
             return latest_ts_df
-        except Exception as e:
+        except Exception:
             return pd.DataFrame()
 
-    def get_latest_stock_minutes_klines(self, composite_figi: str) -> datetime:
-        query = f"SELECT max(timestamp) as last_ts FROM us_minutes_klines WHERE composite_figi = '{composite_figi}'"
+    def insert_us_stock_figi_ticker_mapping(self, df: pd.DataFrame):
+        try:
+            self.db.client.insert_df("us_stock_figi_ticker_mapping", df)
+        except Exception as e:
+            app_logger.error(f"插入figi ticker 映射表失败: {e}")
+            raise e
+
+    def get_us_stock_figi_ticker_mapping(self, figi) -> pd.DataFrame:
+        from src.model.us_stock_figi_ticker_mapping_model import UsStockFigiTickerMappingModel
+        query = UsStockFigiTickerMappingModel.QUERY_MAPPING_BY_FIGI_SQL.format(
+            figi=figi
+        )
         try:
             res = self.db.client.query_df(query)
-            last_ts = res.iloc[0]["last_ts"]
-            if pd.notna(last_ts):
-                return pd.to_datetime(last_ts).replace(tzinfo=pytz.UTC)
-            start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+            return res
         except Exception as e:
-            app_logger.error(f"查询最新分钟K线时间戳失败: {e}")
-            start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+            app_logger.error(f"查询股票列表数据失败: {e}")
+            return pd.DataFrame()
+
+    def get_figi_mapping_by_tickers(self, tickers: list[str]) -> dict:
+        if not tickers:
+            return {}
+        from src.model.us_stock_figi_ticker_mapping_model import UsStockFigiTickerMappingModel
+        
+        tickers_str = "','".join(tickers)
+        query = UsStockFigiTickerMappingModel.QUERY_MAPPING_BY_TICKERS_SQL.format(
+            tickers_str=f"'{tickers_str}'"
+        )
+        try:
+            res = self.db.client.query_df(query)
+            if res.empty:
+                return {}
+            # 返回 ticker 到 composite_figi 的字典映射
+            return dict(zip(res["ticker"], res["composite_figi"]))
+        except Exception as e:
+            app_logger.error(f"查询 tickers 映射失败: {e}")
+            return {}
+
+    def get_figi_mapping_history_by_tickers(self, tickers: list[str]) -> pd.DataFrame:
+        if not tickers:
+            return pd.DataFrame()
+        from src.model.us_stock_figi_ticker_mapping_model import UsStockFigiTickerMappingModel
+        
+        tickers_str = "','".join(tickers)
+        query = UsStockFigiTickerMappingModel.QUERY_MAPPINGS_HISTORY_BY_TICKERS_SQL.format(
+            tickers_str=f"'{tickers_str}'"
+        )
+        try:
+            res = self.db.client.query_df(query)
+            return res
+        except Exception as e:
+            app_logger.error(f"查询 tickers 历史映射失败: {e}")
+            return pd.DataFrame()
 
     def insert_benchmark_etf_klines(self, df: pd.DataFrame):
         try:
@@ -107,18 +152,22 @@ class MarketDataRepo:
             raise e
 
     def get_latest_benchmark_etf_klines(self, ticker: str) -> datetime:
-        query = f"SELECT max(timestamp) as last_ts FROM us_benchmark_etf_klines WHERE ticker = '{ticker}'"
+        from src.model.us_benchmark_etf_kline_model import BenchmarkEtfKlineModel
+
+        query = BenchmarkEtfKlineModel.QUERY_LATEST_TS_BY_TICKER_SQL.format(
+            ticker=ticker
+        )
         try:
             res = self.db.client.query_df(query)
             last_ts = res.iloc[0]["last_ts"]
             if pd.notna(last_ts):
-                return pd.to_datetime(last_ts).replace(tzinfo=pytz.UTC)
+                return pd.to_datetime(last_ts).replace(tzinfo=ZoneInfo("UTC"))
             start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
         except Exception as e:
             app_logger.error(f"查询最新基准ETF K线时间戳失败: {e}")
             start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
 
     def insert_macro_daily_klines(self, df: pd.DataFrame):
         # 此时传进来的 df 已经是被 Model 洗干净的了
@@ -142,8 +191,11 @@ class MarketDataRepo:
 
         symbols_str = "','".join(target_symbols)
 
-        # SQL 里 AS ts
-        query = f"SELECT max(trade_date) as ts FROM us_macro_daily_klines WHERE ticker IN ('{symbols_str}')"
+        from src.model.us_macro_daily_kline_model import UsMacroDailyKlineModel
+
+        query = UsMacroDailyKlineModel.MAX_TRADE_DATE_QUERY_SQL.format(
+            symbols_str=symbols_str
+        )
 
         try:
             res = self.db.client.query_df(query)  # 假设你单例调用是这样
@@ -161,42 +213,32 @@ class MarketDataRepo:
             app_logger.error(f"查询最新交易日期失败: {e}")
             return os.getenv("SCRAPING_START_DATE", "2014-01-01")
 
-    def get_sync_tasks(self, table_name: str, id_column: str = 'composite_figi') -> pd.DataFrame:
-        """
-        Identify symbols needing sync by joining with a specific _state table.
-        table_name: The base table name (e.g., 'us_stock_fundamentals')
-        id_column: 'cik' or 'composite_figi'
-        """
-        state_table = f"{table_name}_state"
-        query = f"""
-        SELECT 
-            u.ticker, u.cik, u.composite_figi, u.active, u.delisted_date,
-            ifNull(s.state, 0) as sync_state
-        FROM us_stock_universe u
-        LEFT JOIN {state_table} s ON u.{id_column} = s.{id_column}
-        """
-        try:
-            return self.db.client.query_df(query)
-        except Exception as e:
-            app_logger.error(f"Query sync tasks failed for {table_name}: {e}")
-            return pd.DataFrame()
-
-    def update_sync_status(self, table_name: str, identifier: str, id_column: str = 'composite_figi', state: int = 1):
+    # 用来存已经delisted的个股已经抓取完了用1表示。没有delisted或者没有抓取完就是0。
+    def update_sync_status(
+        self,
+        table_name: str,
+        identifier: str,
+        id_column: str = "composite_figi",
+        state: int = 1,
+    ):
         """
         Update completion state for a specific table.
         Model -> DF -> Repo pattern.
         """
         try:
             from src.model.us_stock_state_model import UsStockStateModel
+
             state_table = f"{table_name}_state"
-            
+
             df = UsStockStateModel.format_dataframe(identifier, id_column, state)
-            
+
             if not df.empty:
                 self.db.client.insert_df(state_table, df)
-                
+
         except Exception as e:
-            app_logger.error(f"Update sync status failed for {table_name} [{identifier}]: {e}")
+            app_logger.error(
+                f"Update sync status failed for {table_name} [{identifier}]: {e}"
+            )
 
     def insert_marco_indicators(self, df: pd.DataFrame):
         self.db.client.insert_df("us_macro_indicators", df)
@@ -216,17 +258,22 @@ class MarketDataRepo:
         if not target_codes:
             app_logger.error(f"indicator_code 参数非法: {indicator_code}")
             start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
-        query = f"SELECT max(publish_timestamp) as last_ts FROM us_macro_indicators WHERE indicator_code IN ('{target_codes}')"
+            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
+        target_codes_str = "','".join(target_codes)
+        from src.model.us_macro_indicators_model import UsMacroIndicatorsModel
+
+        query = UsMacroIndicatorsModel.MAX_PUBLISHED_TIMESTAMP_QUERY_SQL.format(
+            target_codes=target_codes_str
+        )
         try:
             res = self.db.client.query_df(query)
             last_ts = res.iloc[0]["last_ts"]
             if pd.notna(last_ts):
-                return pd.to_datetime(last_ts).replace(tzinfo=pytz.UTC)
+                return pd.to_datetime(last_ts).replace(tzinfo=ZoneInfo("UTC"))
 
             start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
         except Exception as e:
             app_logger.error(f"查询最新宏观指标时间戳失败: {e}")
             start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
+            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))

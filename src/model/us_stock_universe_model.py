@@ -1,40 +1,108 @@
-from src.model import BaseClickHouseModel
-from pydantic import Field
-from datetime import date
-from typing import Optional
-from datetime import datetime
+from src.model.base_clickhouse_model import BaseClickHouseModel
 import pandas as pd
+from typing import ClassVar, Dict, Any
+import numpy as np
 
 
 # ==========================================
 # 1. 股票宇宙表
 # ==========================================
 class UsStockUniverseModel(BaseClickHouseModel):
-    ticker: str = Field(...)
-    composite_figi: str = Field(...)
-    name: str = Field(...)
-    cik: str = Field(...)
-    active: int = Field(default=1)  # UInt8
-    delisted_date: Optional[date] = Field(default=None)
-    update_time: Optional[datetime] = Field(default=None)
+    table_name: ClassVar[str] = "us_stock_universe"
+
+    __DDL__: ClassVar[str] = """
+        CREATE TABLE IF NOT EXISTS us_stock_universe
+        (
+            ticker String,
+            composite_figi FixedString(12),
+            name                 String,
+            cik                  FixedString(10),
+            active               UInt8 DEFAULT 0,
+            base_currency_name   Nullable(String),
+            base_currency_symbol Nullable(FixedString(3)),
+            currency_name        Nullable(String),
+            currency_symbol      Nullable(FixedString(3)),
+            delisted_utc         Nullable(DateTime64(3, 'UTC')),
+            last_updated_utc     DateTime64(3, 'UTC'),
+            locale               LowCardinality(String),
+            market               LowCardinality(String),
+            primary_exchange     Nullable(String),
+            share_class_figi     Nullable(FixedString(12)),
+            type                 Nullable(String),
+            update_time DateTime64(3, 'UTC') DEFAULT now64(3)
+        ) ENGINE = ReplacingMergeTree(update_time)
+        ORDER BY (composite_figi)
+    """
+
+    SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {
+        "ticker": {"type": "str", "nullable": False},
+        "composite_figi": {"type": "str", "len": 12, "nullable": False},
+        "name": {"type": "str"},
+        "cik": {"type": "str", "len": 10},
+        "active": {"type": "int", "default": 0},
+        "base_currency_name": {"type": "str"},
+        "base_currency_symbol": {"type": "str", "len": 3},
+        "currency_name": {"type": "str"},
+        "currency_symbol": {"type": "str", "len": 3},
+        "delisted_utc": {"type": "datetime", "tz": "UTC"},
+        "last_updated_utc": {"type": "datetime", "tz": "UTC"},
+        "locale": {"type": "str"},
+        "market": {"type": "str"},
+        "primary_exchange": {"type": "str"},
+        "share_class_figi": {"type": "str", "len": 12},
+        "type": {"type": "str"},
+        "update_time": {"type": "datetime", "tz": "US/Eastern"},
+    }
+
+    QUERY_ACTIVE_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe WHERE active = 1"
+    QUERY_DELISTED_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe WHERE active = 0"
+    QUERY_ALL_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe"
+    QUERY_SYNC_TASKS_SQL: ClassVar[str] = (
+        "SELECT "
+        "    u.ticker, u.cik, u.composite_figi, u.active, u.delisted_utc, "
+        "    ifNull(s.state, 0) as sync_state "
+        "FROM us_stock_universe u "
+        "LEFT JOIN {state_table} s ON u.{id_column} = s.{id_column}"
+    )
 
     @classmethod
     def format_dataframe(cls, df: pd.DataFrame) -> pd.DataFrame:
-        if df.empty:
-            return df
+        """格式化与数据对齐"""
+        if df is None or df.empty:
+            return pd.DataFrame()
 
-        # 1. 强制对齐列（你原有的逻辑）
-        cols = cls.get_columns()
-        for col in cols:
+        df = df.copy()
+
+        # 1. 预处理：确保空值统一为 np.nan 方便后续处理
+        if "composite_figi" in df.columns:
+            df["composite_figi"] = df["composite_figi"].replace(
+                {None: np.nan, "": np.nan, "nan": np.nan}
+            )
+
+        # 2. 字段填充与默认值处理
+        for col, meta in cls.SCHEMA_CLEAN.items():
             if col not in df.columns:
-                df[col] = cls.model_fields[col].default
+                df[col] = meta.get("default", None)
 
-        # 2. 🌟 关键：处理 delisted_date 类型转换
-        if "delisted_date" in df.columns:
-            # 将 ISO 字符串转为 datetime 对象，再提取 date 部分
-            # errors='coerce' 会将无法解析的列或 None 转为 NaT (对应 ClickHouse 的 Nullable)
-            df["delisted_date"] = pd.to_datetime(
-                df["delisted_date"], errors="coerce"
-            ).dt.date
+        # 3. 统一处理时间戳
+        time_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "datetime"]
+        for col in time_cols:
+            df[col] = pd.to_datetime(df[col], errors="coerce", utc=True).dt.tz_localize(
+                None
+            )
 
-        return df[cols].copy()
+        # 4. 类型转换与字符串截断 (注意：先填充空字符串再转 str，避免 NaN 变成 "nan")
+        for col, meta in cls.SCHEMA_CLEAN.items():
+            if meta["type"] == "str":
+                length = meta.get("len")
+                df[col] = df[col].fillna("").astype(str)
+                if length:
+                    df[col] = df[col].str.slice(0, length)
+            elif meta["type"] == "int":
+                df[col] = (
+                    pd.to_numeric(df[col], errors="coerce")
+                    .fillna(meta.get("default", 0))
+                    .astype(int)
+                )
+
+        return df[list(cls.SCHEMA_CLEAN.keys())]

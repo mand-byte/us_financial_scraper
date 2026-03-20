@@ -3,8 +3,8 @@ name = "us-financial-scraper"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = [
+requires-python = ">=3.12"
+2dependencies = [
     "apscheduler>=3.11.2",
     "clickhouse-connect>=0.14.1",
     "dotenv>=0.9.9",

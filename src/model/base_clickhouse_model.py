@@ -1,23 +1,22 @@
 import pandas as pd
-import numpy as np
-from pydantic import BaseModel
-from typing import List
+from typing import Dict, Type, ClassVar
 
-class BaseClickHouseModel(BaseModel):
-    @classmethod
-    def get_columns(cls) -> List[str]:
-        return list(cls.model_fields.keys())
+class BaseClickHouseModel:
+    """自动化 ClickHouse 模型基类 (已弃用 Pydantic)"""
+
+    _registry: ClassVar[Dict[str, Type['BaseClickHouseModel']]] = {}
+    table_name: ClassVar[str] = ""
+    __DDL__: ClassVar[str] = ""
+    __abstract__: ClassVar[bool] = False
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls.table_name and not getattr(cls, "__abstract__", False):
+            cls._registry[cls.table_name] = cls
 
     @classmethod
-    def format_dataframe(cls, df: pd.DataFrame) -> pd.DataFrame:
-        """通用清洗函数：强制对齐列名，丢弃多余列，补齐缺失列"""
-        if df.empty:
-            return df
-            
-        cols = cls.get_columns()
-        for col in cols:
-            if col not in df.columns:
-                df[col] = cls.model_fields[col].default
-        
-        # 只保留模型定义的列
-        return df[cols].copy()
+    def get_create_table_sql(cls) -> str:
+        """统一获取建表 DDL"""
+        if not cls.__DDL__:
+            raise ValueError(f"❌ Model [{cls.__name__}] 缺失 __DDL__ 定义")
+        return cls.__DDL__.strip()

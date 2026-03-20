@@ -1,63 +1,86 @@
-from pydantic import Field
-from datetime import datetime
-from typing import List
+from src.model.base_clickhouse_model import BaseClickHouseModel
 import pandas as pd
-import numpy as np
-from src.model import BaseClickHouseModel
-
+from typing import ClassVar, Dict, Any
 
 # ==========================================
-# 2. 美股分钟 K 线表
+# 2. 个股 K线表
 # ==========================================
 class UsStockMinutesKlineModel(BaseClickHouseModel):
-    # 1. 定义严格的字段和类型
-    composite_figi: str = Field(...)
-    timestamp: datetime = Field(...)
-    open: float = Field(default=0.0)
-    high: float = Field(default=0.0)
-    low: float = Field(default=0.0)
-    close: float = Field(default=0.0)
-    vwap: float = Field(default=0.0)
-    trades_count: int = Field(default=0)
-    volume: int = Field(default=0)
+    table_name: ClassVar[str] = "us_minutes_klines"
+
+    __DDL__: ClassVar[str] = """
+        CREATE TABLE IF NOT EXISTS us_minutes_klines
+        (
+            composite_figi FixedString(12),
+            timestamp        DateTime64(3, 'UTC'),
+            open             Float64,
+            high             Float64,
+            low              Float64,
+            close            Float64,
+            vwap             Float64 DEFAULT 0,
+            trades_count     UInt64,
+            volume           Float64,
+            otc              UInt8 DEFAULT 0
+        ) ENGINE = ReplacingMergeTree(timestamp)
+        PARTITION BY toYYYYMM(timestamp)
+        ORDER BY (composite_figi, timestamp)
+        SETTINGS index_granularity = 8192;
+    """
+
+    SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {
+        "composite_figi": {"type": "str", "len": 12},
+        "timestamp": {"type": "datetime", "tz": "UTC"},
+        "open": {"type": "float64"},
+        "high": {"type": "float64"},
+        "low": {"type": "float64"},
+        "close": {"type": "float64"},
+        "vwap": {"type": "float64", "default": 0.0},
+        "trades_count": {"type": "uint64", "default": 0},
+        "volume": {"type": "float64", "default": 0.0},
+        "otc": {"type": "uint8", "default": 0},
+    }
+
+    QUERY_LATEST_TS_BY_GROUP_SQL: ClassVar[str] = "SELECT composite_figi, MAX(timestamp) as last_ts FROM us_minutes_klines GROUP BY composite_figi"
 
     @classmethod
-    def format_dataframe(cls, df: pd.DataFrame, ticker: str, figi: str) -> pd.DataFrame:
-        if df.empty:
-            return df
+    def format_dataframe(cls, df: pd.DataFrame, composite_figi: str) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame()
 
-        # 1. 基础映射与补全 (针对 API 返回的原始列表)
-        # 你的 fetch_klines 已经把 o, c 映射成了 open, close，这里确保元数据到位
-        df["ticker"] = ticker
-        df["composite_figi"] = figi
+        df = df.copy()
 
-        # 2. 🌟 核心：时间戳处理 (ms -> UTC DateTime)
-        # unit='ms' 对应 API 的 "t" 字段，utc=True 确保时区正确
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-
-        # 3. 类型强制转换 (防止 ClickHouse 插入时因 Float64/Float32 不匹配报错)
-        # 根据你 DB 的定义，通常价格用 Float32 或 Decimal，成交量用 UInt64
-        type_mapping = {
-            "open": "float32",
-            "high": "float32",
-            "low": "float32",
-            "close": "float32",
-            "vwap": "float32",
-            "volume": "uint64",
-            "trades_count": "uint32",
+        rename_map = {
+            "t": "timestamp",
+            "o": "open",
+            "h": "high",
+            "l": "low",
+            "c": "close",
+            "v": "volume",
+            "vw": "vwap",
+            "n": "trades_count",
         }
+        df = df.rename(columns=rename_map)
 
-        for col, dtype in type_mapping.items():
-            if col in df.columns:
-                # 处理可能出现的 NaN，ClickHouse 非 Nullable 列不能接受 NaN
-                if "float" in dtype:
-                    df[col] = df[col].fillna(0.0).astype(dtype)
-                else:
-                    df[col] = df[col].fillna(0).astype(dtype)
+        for col, meta in cls.SCHEMA_CLEAN.items():
+            if col not in df.columns:
+                df[col] = meta.get("default", None)
 
-        # 4. 增加系统列
-        df["update_time"] = pd.Timestamp.now(tz="UTC")
+        df["composite_figi"] = (
+            df["composite_figi"]
+            .fillna(str(composite_figi))
+            .astype(str)
+            .str.slice(0, 12)
+        )
 
-        # 5. 按照模型定义的列顺序对齐
-        cols = cls.get_columns()  # 假设你基类有这个方法获取字段列表
-        return df[cols].copy()
+        df["timestamp"] = pd.to_datetime(
+            df["timestamp"], unit="ms", utc=True
+        ).dt.tz_localize(None)
+
+        float_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "float64"]
+        for col in float_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype("float64")
+
+        df["trades_count"] = pd.to_numeric(df["trades_count"], errors="coerce").fillna(0).astype("uint64")
+        df["otc"] = df["otc"].fillna(0).replace({True: 1, False: 0}).astype("uint8")
+
+        return df[list(cls.SCHEMA_CLEAN.keys())]

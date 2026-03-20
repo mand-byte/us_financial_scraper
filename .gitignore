@@ -23,3 +23,4 @@ ENV/
 *.log
 logs/
 data/
+tests/.local_packages/

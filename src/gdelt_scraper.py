@@ -6,7 +6,7 @@ import io
 import os
 import time
 from datetime import datetime
-import pytz
+from zoneinfo import ZoneInfo
 import threading
 from src.dao import SentimentRepo
 from src.model import GdeltMacroSentimentModel
@@ -28,7 +28,7 @@ class GDELTScraper:
     def fetch_and_process_v2(self, file_url, timestamp_str):
         """处理 GDELT 2.0 15分钟增量文件并转换为智能加权聚合宽表记录"""
         filename = file_url.split('/')[-1]
-        dt = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S").replace(tzinfo=pytz.UTC)
+        dt = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S").replace(tzinfo=ZoneInfo("UTC"))
         
         try:
             r = requests.get(file_url, timeout=30)
@@ -116,7 +116,7 @@ class GDELTScraper:
                 
                 file_ts_str = file_url.split('/')[-1].split('.')[0]
                 try:
-                    file_ts = datetime.strptime(file_ts_str, "%Y%m%d%H%M%S").replace(tzinfo=pytz.UTC)
+                    file_ts = datetime.strptime(file_ts_str, "%Y%m%d%H%M%S").replace(tzinfo=ZoneInfo("UTC"))
                 except: continue
                 if file_ts > start_ts:
                     app_logger.info(f"📥 聚合 GDELT 开始下载文件: {file_ts_str}")
