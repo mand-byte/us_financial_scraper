@@ -9,7 +9,7 @@ import pandas as pd
 from datetime import date
 
 from src.utils.logger import app_logger
-from src.clickhouse_manager import ClickHouseManager
+from src.dao.clickhouse_manager import ClickHouseManager
 from src.model.base_clickhouse_model import BaseClickHouseModel
 
 

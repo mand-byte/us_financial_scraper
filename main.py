@@ -1,22 +1,29 @@
 import signal
 import sys
+from importlib import import_module
+
 from src.utils.logger import app_logger
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.executors.pool import ThreadPoolExecutor
 from dotenv import load_dotenv
-from src import (
-    MassiveDataFetcher,
-    MassiveFundamentalScraper,
-    MassiveBenchmarkScraper,
-    MassiveNewsFetcher,
-    MassiveRatiosFetcher,
-    MassiveActionsFetcher,
-    FredScraper,
-    GDELTScraper,
-    CboeDataFetcher,
-    YahooMacroScraper,
-    ForexFactoryScraper,
-)
+
+SCRAPER_SPECS = [
+    ("src.massive_kline_scraper", "MassiveKlineScraper"),
+    ("src.massive_fundamentals_scraper", "MassiveFundamentalsScraper"),
+    ("src.massive_benchmark_scraper", "MassiveBenchmarkScraper"),
+    ("src.massive_news_scraper", "MassiveNewsScraper"),
+    ("src.massive_actions_scraper", "MassiveActionsScraper"),
+    ("src.fred_scraper", "FredScraper"),
+    ("src.gdelt_scraper", "GDELTScraper"),
+    ("src.yahoo_finance_macro_scraper", "YahooMacroScraper"),
+    ("src.forex_factory_scraper", "ForexFactoryScraper"),
+    ("src.cboe_scraper", "CboeScraper"),
+]
+
+
+def _load_scraper_class(module_name: str, class_name: str):
+    module = import_module(module_name)
+    return getattr(module, class_name)
 
 load_dotenv()
 executors = {"default": ThreadPoolExecutor(20)}
@@ -30,20 +37,13 @@ class ScraperOrchestrator:
         self.scheduler = BlockingScheduler(
             timezone="US/Eastern", executors=executors, job_defaults=job_defaults
         )
-        # 1. 实例化所有搜刮器
-        self.scrapers = [
-            MassiveDataFetcher(self.scheduler),
-            MassiveFundamentalScraper(self.scheduler),
-            MassiveBenchmarkScraper(self.scheduler),
-            MassiveNewsFetcher(self.scheduler),
-            MassiveRatiosFetcher(self.scheduler),
-            MassiveActionsFetcher(self.scheduler),
-            FredScraper(self.scheduler),
-            GDELTScraper(self.scheduler),
-            YahooMacroScraper(self.scheduler),
-            ForexFactoryScraper(self.scheduler),
-            CboeDataFetcher(self.scheduler),
-        ]
+        self.scrapers = []
+        for module_name, class_name in SCRAPER_SPECS:
+            try:
+                scraper_cls = _load_scraper_class(module_name, class_name)
+                self.scrapers.append(scraper_cls(self.scheduler))
+            except Exception as exc:
+                app_logger.warning(f"跳过搜刮器 {class_name}: {exc}")
 
     def start_all(self):
         self.is_running = True

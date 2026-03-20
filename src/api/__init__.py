@@ -1,4 +1,4 @@
 from .massive_api import MassiveApi
-from .openfigi_client import OpenFIGIClient
+from .open_figi_client import OpenFIGIClient
 
 __all__ = ["MassiveApi", "OpenFIGIClient"]

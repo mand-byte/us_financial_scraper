@@ -1,27 +1,34 @@
-from .fred_scraper import FredScraper
-from .gdelt_scraper import GDELTScraper
-from .utils.cboe_scraper import CboeDataFetcher
-from .yahoo_finance_macro_scraper import YahooMacroScraper
-from .forex_factory_scraper import ForexFactoryScraper
-from .massive_scraper import MassiveDataFetcher
-from .massive_fundamentals_scraper import MassiveFundamentalsScraper
-from .massive_benchmark_scraper import MassiveBenchmarkScraper
-from .massive_news_scraper import MassiveNewsScraper
-from .massive_financial_factor_scraper import MassiveFinancialFactorScraper
-from .massive_actions_scraper import MassiveActionsScraper
-from .sec_edgar_scraper import SecEdgarScraper
+from importlib import import_module
 
-__all__ = [
-    "FredScraper",
-    "GDELTScraper",
-    "CboeDataFetcher",
-    "YahooMacroScraper",
-    "ForexFactoryScraper",
-    "MassiveDataFetcher",
-    "MassiveFundamentalsScraper",
-    "MassiveBenchmarkScraper",
-    "MassiveNewsScraper",
-    "MassiveFinancialFactorScraper",
-    "MassiveActionsScraper",
-    "SecEdgarScraper",
-]
+_EXPORT_MAP = {
+    "CboeScraper": ("src.cboe_scraper", "CboeScraper"),
+    "ForexFactoryScraper": ("src.forex_factory_scraper", "ForexFactoryScraper"),
+    "FredScraper": ("src.fred_scraper", "FredScraper"),
+    "GDELTScraper": ("src.gdelt_scraper", "GDELTScraper"),
+    "YahooMacroScraper": ("src.yahoo_finance_macro_scraper", "YahooMacroScraper"),
+    "MassiveActionsScraper": ("src.massive_actions_scraper", "MassiveActionsScraper"),
+    "MassiveBenchmarkScraper": ("src.massive_benchmark_scraper", "MassiveBenchmarkScraper"),
+    "MassiveFundamentalsScraper": ("src.massive_fundamentals_scraper", "MassiveFundamentalsScraper"),
+    "MassiveKlineScraper": ("src.massive_kline_scraper", "MassiveKlineScraper"),
+    "MassiveNewsScraper": ("src.massive_news_scraper", "MassiveNewsScraper"),
+    "SecEdgarScraper": ("src.sec_edgar_scraper", "SecEdgarScraper"),
+    "CboeDataFetcher": ("src.cboe_scraper", "CboeScraper"),
+    "MassiveActionsFetcher": ("src.massive_actions_scraper", "MassiveActionsScraper"),
+    "MassiveDataFetcher": ("src.massive_kline_scraper", "MassiveKlineScraper"),
+    "MassiveFundamentalScraper": ("src.massive_fundamentals_scraper", "MassiveFundamentalsScraper"),
+    "MassiveNewsFetcher": ("src.massive_news_scraper", "MassiveNewsScraper"),
+}
+
+
+def __getattr__(name):
+    if name not in _EXPORT_MAP:
+        raise AttributeError(f"module 'src' has no attribute {name!r}")
+
+    module_name, attr_name = _EXPORT_MAP[name]
+    module = import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+__all__ = sorted(_EXPORT_MAP)

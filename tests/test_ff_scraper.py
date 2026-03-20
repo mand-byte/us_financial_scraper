@@ -1,10 +1,13 @@
-import pandas as pd
 from datetime import datetime
-import pytz
-from src.utils.forexfactory_scraper.scraper import scrape_month
-from src.forexfactory_economic_calendar_scraper import ForexFactoryScraper
-from apscheduler.schedulers.blocking import BlockingScheduler
 import logging
+
+from apscheduler.schedulers.blocking import BlockingScheduler
+import pandas as pd
+import pytest
+import pytz
+
+from src.forex_factory_scraper import ForexFactoryScraper
+from src.utils.forexfactory_scraper.scraper import scrape_month
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -14,10 +17,7 @@ def test_layer_logic():
     # 1. 测试底层接口 (scrape_month)
     print("🧪 测试底层月度接口: scrape_month('mar', 2024)...")
     df_raw = scrape_month("mar", 2024)
-
-    if df_raw.empty:
-        print("❌ 底层接口抓取失败。")
-        return
+    assert not df_raw.empty, "ForexFactory 底层抓取返回空数据"
 
     print(f"✅ 底层接口成功抓取到 {len(df_raw)} 条指标。")
 
@@ -40,6 +40,7 @@ def test_layer_logic():
 
     # 业务层进行 EventID 匹配和清洗
     df_final = scraper_service.process_scraped_data(df_filtered)
+    assert isinstance(df_final, pd.DataFrame)
 
     if not df_final.empty:
         print("\n" + "=" * 60)
@@ -48,8 +49,8 @@ def test_layer_logic():
         print(df_final.to_string(index=False))
         print(f"\n🎯 最终入库指标数: {len(df_final)}")
     else:
-        print(
-            "❌ 业务层处理后无有效指标（请确认 constants.py 中 ID 是否覆盖了 2024-03-10 到 03-15 的关键指标）。"
+        pytest.fail(
+            "业务层处理后无有效指标，请确认 constants.py 中 ID 是否覆盖了 2024-03-10 到 03-15 的关键指标。"
         )
 
 

@@ -30,10 +30,26 @@ from src.utils.logger import app_logger
 from src.model.us_stock_balance_sheets_model import UsStockBalanceSheetsModel
 from src.model.us_stock_cash_flow_statements_model import UsStockCashFlowStatementsModel
 from src.model.us_stock_income_statements_model import UsStockIncomeStatementsModel
-from src.model.us_stock_daily_ratios_factors_model import StockDailyRatiosFactorsModel
-from src.model.us_stock_daily_short_interest_factors_model import StockDailyShortInterestFactorsModel
-from src.model.us_stock_daily_short_volume_factors_model import StockDailyShortVolumeFactorsModel
-from src.model.us_stock_daily_float_factors_model import StockDailyFloatFactorsModel
+
+try:
+    from src.model.us_stock_daily_ratios_factors_model import StockDailyRatiosFactorsModel
+except ModuleNotFoundError:
+    StockDailyRatiosFactorsModel = None
+
+try:
+    from src.model.us_stock_daily_short_interest_factors_model import StockDailyShortInterestFactorsModel
+except ModuleNotFoundError:
+    StockDailyShortInterestFactorsModel = None
+
+try:
+    from src.model.us_stock_daily_short_volume_factors_model import StockDailyShortVolumeFactorsModel
+except ModuleNotFoundError:
+    StockDailyShortVolumeFactorsModel = None
+
+try:
+    from src.model.us_stock_daily_float_factors_model import StockDailyFloatFactorsModel
+except ModuleNotFoundError:
+    StockDailyFloatFactorsModel = None
 
 class MassiveFundamentalsScraper:
     NYC = ZoneInfo("America/New_York")
@@ -183,36 +199,48 @@ class MassiveFundamentalsScraper:
             api_date_param="date",
             query_history=True
         )
-        self._fetch_and_store(
-            api_func=self.api.get_short_interest,
-            model_cls=StockDailyShortInterestFactorsModel,
-            date_col="settlement_date",
-            api_date_param="date",
-            query_history=True
-        )
-        self._fetch_and_store(
-            api_func=self.api.get_short_volume,
-            model_cls=StockDailyShortVolumeFactorsModel,
-            date_col="date",
-            api_date_param="date",
-            query_history=True
-        )
-        
-        # 2. 属于只含最新时间切片数据的行为
-        self._fetch_and_store(
-            api_func=self.api.get_float,
-            model_cls=StockDailyFloatFactorsModel,
-            date_col="effective_date",
-            api_date_param=None,
-            query_history=False
-        )
-        self._fetch_and_store(
-            api_func=self.api.get_ratios,
-            model_cls=StockDailyRatiosFactorsModel,
-            date_col="date",
-            api_date_param=None,
-            query_history=False 
-        )
+        factor_jobs = [
+            (
+                StockDailyShortInterestFactorsModel,
+                self.api.get_short_interest,
+                "settlement_date",
+                "date",
+                True,
+            ),
+            (
+                StockDailyShortVolumeFactorsModel,
+                self.api.get_short_volume,
+                "date",
+                "date",
+                True,
+            ),
+            (
+                StockDailyFloatFactorsModel,
+                self.api.get_float,
+                "effective_date",
+                None,
+                False,
+            ),
+            (
+                StockDailyRatiosFactorsModel,
+                self.api.get_ratios,
+                "date",
+                None,
+                False,
+            ),
+        ]
+
+        for model_cls, api_func, date_col, api_date_param, query_history in factor_jobs:
+            if model_cls is None:
+                app_logger.warning(f"跳过缺失模型对应的 fundamental factor 任务: {date_col}")
+                continue
+            self._fetch_and_store(
+                api_func=api_func,
+                model_cls=model_cls,
+                date_col=date_col,
+                api_date_param=api_date_param,
+                query_history=query_history,
+            )
 
 if __name__ == "__main__":
     scraper = MassiveFundamentalsScraper()

@@ -18,8 +18,14 @@ from src.utils.sec_edgar.parsers import (
     Form10QParser,
     Form10KParser,
 )
+from src.dao.clickhouse_manager import ClickHouseManager
 from src.dao.sec_edgar_repo import SecEdgarRepo
-from src.clickhouse_manager import ClickHouseManager
+from src.model.sec_form10k_model import SecForm10KModel
+from src.model.sec_form10q_model import SecForm10QModel
+from src.model.sec_form13f_model import SecForm13FModel
+from src.model.sec_form4_model import SecForm4Model
+from src.model.sec_form8k_model import SecForm8KModel
+from src.model.sec_sc13d_model import SecSC13DModel
 
 # 对应表单映射
 FORM_CLASS_MAPPING = {
@@ -47,15 +53,13 @@ class SecEdgarScraper:
             "10-K": Form10KParser(),
         }
 
-        # 加载 Model 类引用以便 Repo 插入
-        import src.model as models
         self.models = {
-            "4": models.SecForm4Model,
-            "SC 13D": models.SecSC13DModel,
-            "13F-HR": models.SecForm13FModel,
-            "8-K": models.SecForm8KModel,
-            "10-Q": models.SecForm10QModel,
-            "10-K": models.SecForm10KModel,
+            "4": SecForm4Model,
+            "SC 13D": SecSC13DModel,
+            "13F-HR": SecForm13FModel,
+            "8-K": SecForm8KModel,
+            "10-Q": SecForm10QModel,
+            "10-K": SecForm10KModel,
         }
 
         # 缓存全局 CIK -> FIGI 映射
@@ -201,7 +205,7 @@ class SecEdgarScraper:
             self.sync_form(form, lookback_days=lookback_days)
 
 if __name__ == "__main__":
-    from src.clickhouse_manager import ClickHouseManager
+    from src.dao.clickhouse_manager import ClickHouseManager
     ch = ClickHouseManager()
     scraper = SecEdgarScraper(ch)
     # 沙盒试运行同步昨天的 Form 4
