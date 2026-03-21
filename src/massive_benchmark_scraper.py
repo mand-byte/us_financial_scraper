@@ -15,8 +15,7 @@ Massive 基准 ETF 搜刮器 (MassiveBenchmarkScraper) - 需求与逻辑文档
 ================================================================================
 """
 
-import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -55,7 +54,7 @@ class MassiveBenchmarkScraper:
             )
 
             
-            logger.info(f"✅ Massive 基准 ETF 搜刮器已启动 。")
+            logger.info("✅ Massive 基准 ETF 搜刮器已启动 。")
     def fetch_benchmark_etf_klines(self):
         """从数据库最新时间戳开始，拉取到当前时间的增量 K 线数据"""
         now_nyc = datetime.now(self.NYC)
@@ -65,6 +64,10 @@ class MassiveBenchmarkScraper:
             try:
                 # 1. 获取该 ticker 在数据库中的最新时间戳
                 last_dt = self.repo.get_latest_benchmark_etf_klines(ticker)
+                
+                if last_dt is None:
+                    last_dt = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
+                    
                 start_ms = int(last_dt.timestamp() * 1000) + 1  # +1ms 避免重复
 
                 # 如果最新记录距当前不足 1 分钟，说明已经是最新的
@@ -74,20 +77,19 @@ class MassiveBenchmarkScraper:
 
                 logger.info(f"🚀 正在同步基准 {ticker}: {last_dt} -> Now")
 
-                # 2. 流式拉取并逐页入库（get_historical_klines 是生成器）
-                for page_df in self.massive.get_historical_klines(
+                # 2. 拉取数据并入库
+                page_df = self.massive.get_historical_klines(
                     ticker=ticker,
                     multiplier=self.KLINE_SPAN,
                     start=str(start_ms),
                     end=str(end_ms),
                     adjusted=False,
-                ):
-                    if page_df is None:
-                        logger.warning(f"⚠️ API failed for {ticker}. Skipping.")
-                        break
-                    if page_df.empty:
-                        continue
-
+                )
+                if page_df is None:
+                    logger.warning(f"⚠️ API failed for {ticker}. Skipping.")
+                    continue
+                
+                if not page_df.empty:
                     clean_df = BenchmarkEtfKlineModel.format_dataframe(page_df, ticker)
                     self.repo.insert_benchmark_etf_klines(clean_df)
 

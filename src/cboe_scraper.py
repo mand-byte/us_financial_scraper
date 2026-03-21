@@ -7,19 +7,20 @@
 # 3. 从CBOE官方库获取VIX现货和期货数据，并进行数据透视处理。
 # 4. 将抓取到的数据与数据库中现有数据进行比较，确保只插入新的数据。
 # 5. 提供启动和停止数据抓取线程的方法，允许在需要时手动控制数据抓取过程
-import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from src.model.us_macro_daily_kline_model import UsMacroDailyKlineModel
 from apscheduler.schedulers.blocking import BlockingScheduler
 from src.utils.logger import app_logger
 from src.dao import MarketDataRepo
+import os
 from src.utils.constants import CBOE_Indicator_Code
 
-# Assuming build_vx_continuous is defined in another util (e.g. cboe_scraping helper), 
-# but it was previously imported via wildcard `from src.utils import *`. 
+# Assuming build_vx_continuous is defined in another util (e.g. cboe_scraping helper),
+# but it was previously imported via wildcard `from src.utils import *`.
 # Fixing this tightly.
 from src.utils.cboe_scraper import build_vx_continuous
+
 
 class CboeScraper:
     NYC = ZoneInfo("America/New_York")
@@ -28,6 +29,7 @@ class CboeScraper:
         self.mapping = CBOE_Indicator_Code  # {'VX1': 'VX1', 'VX2': 'VX2'}
         self.scheduler = scheduler
         self.repo = MarketDataRepo()
+        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
 
     def start(self):
         app_logger.info("✅ CBOE VIX 指数与期货搜刮器已激活。")
@@ -51,6 +53,8 @@ class CboeScraper:
         try:
             # 使用 VX1 作为基准探测日期
             res_date_str = self.repo.get_latest_trade_date_in_macro_daily_klines("VX1")
+            if res_date_str is None:
+                res_date_str = self.COLD_START_DATE
             last_db_date = datetime.strptime(res_date_str, "%Y-%m-%d").date()
 
             # build_vx_continuous 会同时生成 VX1 和 VX2
@@ -77,3 +81,15 @@ class CboeScraper:
 
         except Exception as e:
             app_logger.error(f"❌ CBOE VX 同步异常: {e}")
+
+    def stop(self):
+        if hasattr(self, "scheduler") and self.scheduler:
+            try:
+                self.scheduler.remove_job("daily_vix_scraping")
+            except Exception:
+                pass
+            try:
+                self.scheduler.remove_job("initial_vix_sync")
+            except Exception:
+                pass
+        app_logger.info("🛑 CBOE VIX 搜刮器停止。")

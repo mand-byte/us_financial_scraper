@@ -55,41 +55,37 @@ class MassiveApi:
         self,
         ticker_filter_type: Optional[str] = None,
         ticker: Optional[str] = None,
-        type_name: str = "CS",
+        type_name: Optional[str] = "CS",
         sort_type: Optional[str] = None,
         market: str = "stocks",
         active: Optional[bool] = None,
         order: str = "asc",
-        limit: int = 1000,
+        limit: int = 1000
     ) -> pd.DataFrame:
         """
-        :param ticker_filter_type: ticker/ticker.gte/ticker.gt/ticker.lte/ticker.lt
-        :param ticker: ticker symbol
-        :param type_name: type of the ticker, default is CS
-        :param sort_type: sort type, default is None.(composite_figi, ticker, name, market, type, cik...)
-        :param market: market of the ticker, default is stocks
-        :param active: active of the ticker, default is True
-        :param order: order of the ticker, default is asc
-        :param limit: the api return the length of results, max is 1000
+        :param active: active of the ticker, default is True (API default)
+        :param max_pages: maximum pages to fetch
         """
         raw_params = {
-            "type": type_name,
             "market": market,
             "limit": limit,
+            "order": order,
         }
+        if type_name:
+            raw_params["type"] = type_name
+        
         if active is not None:
             raw_params["active"] = "true" if active else "false"
-
         if ticker_filter_type is not None:
             raw_params[ticker_filter_type] = ticker
         if sort_type is not None:
             raw_params["sort"] = sort_type
         endpoint = "/v3/reference/tickers"
-        clean_params = {k: v for k, v in raw_params.items() if v}
+        clean_params = {k: v for k, v in raw_params.items() if v is not None}
         result_raw = []
         try:
             data_ = self.request("GET", endpoint, clean_params)
-            while True:
+            while data_:
                 result_raw.extend(data_.get("results", []))
                 next_url = data_.get("next_url")
                 if next_url:
@@ -201,123 +197,7 @@ class MassiveApi:
             app_logger.error(f"抓取ticker 改名 事件失败  [id: {id}]: {e}")
             return None
 
-    def get_balance_sheets(
-        self,
-        cik: Optional[str] = None,
-        timeframe: str = "quarterly",
-        limit: int = 50000,
-        period_end_tpye: str = "period_end.gt",
-        date: str = "2009-03-29",
-    ) -> pd.DataFrame:
-        """
-        获取资产负债表数据 (Balance Sheets)
-        cik: The company's Central Index Key (CIK), a unique identifier assigned by the U.S. Securities and Exchange Commission (SEC). You can look up a company's CIK using the SEC CIK Lookup tool.
-        timeframe: The reporting period type. Possible values include: quarterly, annual.
-        limit: Limit the maximum number of results returned. Defaults to '100' if not specified. The maximum allowed limit is '50000'.
-        filing_date: The date when the financial statement was filed with the SEC. Value must be formatted 'yyyy-mm-dd'.
-        Retrieve comprehensive balance sheet data for public companies, containing quarterly and annual financial positions. This dataset includes detailed asset, liability, and equity positions representing the company's financial position at specific points in time. Balance sheet data represents point-in-time snapshots rather than cumulative flows, showing what the company owns, owes, and shareholders' equity as of each period end date.
-        """
-        endpoint = "/stocks/financials/v1/balance-sheets"
-        params = {
-            "timeframe": timeframe,
-            period_end_tpye: date,
-            "limit": limit,
-            "sort": "period_end.asc",
-        }
-        if cik is not None:
-            params["cik"] = cik
 
-        try:
-            data_ = self.request("GET", endpoint, params)
-            result_raw = []
-            while True:
-                result_raw.extend(data_.get("results", []))
-
-                # 检查下一页
-                next_url = data_.get("next_url")
-                if next_url:
-                    data_ = self.request("GET", next_url)
-                else:
-                    break
-
-            return pd.DataFrame(result_raw)
-
-        except Exception as e:
-            app_logger.error(
-                f"抓取资产负债表数据失败  [period_end_tpye: {period_end_tpye}] [date: {date}]: {e}"
-            )
-            return None
-
-    def get_cashflow_statements(
-        self,
-        cik: Optional[str] = None,
-        timeframe: str = "quarterly",
-        limit: int = 50000,
-        period_end_type: str = "period_end.gt",
-        date: str = "2009-03-29",
-    ) -> pd.DataFrame:
-        endpoint = "/stocks/financials/v1/cash-flow-statements"
-        params = {
-            period_end_type: date,
-            "limit": limit,
-            "timeframe": timeframe,
-            "sort": "period_end.asc",
-        }
-        if cik is not None:
-            params["cik"] = cik
-        try:
-            data_ = self.request("GET", endpoint, params)
-            result_raw = []
-            while True:
-                result_raw.extend(data_.get("results", []))
-                # 检查下一页
-                next_url = data_.get("next_url")
-                if next_url:
-                    data_ = self.request("GET", next_url)
-                else:
-                    break
-
-            return pd.DataFrame(result_raw)
-
-        except Exception as e:
-            app_logger.error(
-                f"抓取现金流量表数据失败  [period_end_type: {period_end_type}] [date: {date}]: {e}"
-            )
-            return None
-
-    def get_income_statements(
-        self,
-        cik: Optional[str] = None,
-        timeframe: str = "quarterly",
-        limit: int = 50000,
-        period_end_type: str = "period_end.gte",
-        date: str = "2009-03-29",
-    ) -> pd.DataFrame:
-        endpoint = "/stocks/financials/v1/income-statements"
-        params = {
-            period_end_type: date,
-            "limit": limit,
-            "timeframe": timeframe,
-            "sort": "period_end.asc",
-        }
-        if cik is not None:
-            params["cik"] = cik
-        try:
-            data_ = self.request("GET", endpoint, params)
-            result_raw = []
-            while True:
-                result_raw.extend(data_.get("results", []))
-                # 检查下一页
-                next_url = data_.get("next_url")
-                if next_url:
-                    data_ = self.request("GET", next_url)
-                else:
-                    break
-
-            return pd.DataFrame(result_raw)
-        except Exception as e:
-            app_logger.error(f"抓取利润表数据失败 [period_end: {date}]: {e}")
-            return None
 
     # 获取拆合记录
     def get_splits(

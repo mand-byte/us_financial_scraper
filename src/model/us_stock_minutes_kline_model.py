@@ -11,7 +11,7 @@ class UsStockMinutesKlineModel(BaseClickHouseModel):
     __DDL__: ClassVar[str] = """
         CREATE TABLE IF NOT EXISTS us_minutes_klines
         (
-            composite_figi FixedString(12),
+            composite_figi   String,
             timestamp        DateTime64(3, 'UTC'),
             open             Float64,
             high             Float64,

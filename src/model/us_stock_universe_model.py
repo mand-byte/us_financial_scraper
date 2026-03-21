@@ -57,6 +57,7 @@ class UsStockUniverseModel(BaseClickHouseModel):
     QUERY_ACTIVE_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe WHERE active = 1"
     QUERY_DELISTED_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe WHERE active = 0"
     QUERY_ALL_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe"
+    QUERY_CIK_TO_FIGI_MAPPING_SQL: ClassVar[str] = "SELECT cik, composite_figi FROM us_stock_universe WHERE length(composite_figi) > 0"
     QUERY_SYNC_TASKS_SQL: ClassVar[str] = (
         "SELECT "
         "    u.ticker, u.cik, u.composite_figi, u.active, u.delisted_utc, "
@@ -95,7 +96,10 @@ class UsStockUniverseModel(BaseClickHouseModel):
         for col, meta in cls.SCHEMA_CLEAN.items():
             if meta["type"] == "str":
                 length = meta.get("len")
+                # 拦截 DB 查询返回的 FixedString(bytes) 格式，显式解码
+                df[col] = df[col].apply(lambda x: x.decode('utf-8', 'ignore') if isinstance(x, bytes) else x)
                 df[col] = df[col].fillna("").astype(str)
+                df[col] = df[col].replace({"nan": "", "None": ""})
                 if length:
                     df[col] = df[col].str.slice(0, length)
             elif meta["type"] == "int":

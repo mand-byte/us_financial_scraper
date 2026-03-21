@@ -1,21 +1,27 @@
 # -*- coding: utf-8 -*-
 
 
-from .clickhouse_manager import get_db_manager
 import pandas as pd
 from src.utils.logger import app_logger
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from typing import Optional
 
 
 class MarketDataRepo:
+    SCRAPING_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+    @property
+    def db(self):
+        from src.dao.clickhouse_manager import get_db_manager
+        return get_db_manager()
+
     def __init__(self):
-        self.db = get_db_manager()  # 初始化客户端
+        pass
 
     def insert_stock_universe(self, df: pd.DataFrame):
         try:
-            self.db.client.insert_df("stock_universe", df)
+            self.db.client.insert_df("us_stock_universe", df)
         except Exception as e:
             app_logger.error(f"插入股票列表数据失败: {e}")
             raise e
@@ -109,6 +115,17 @@ class MarketDataRepo:
             app_logger.error(f"查询股票列表数据失败: {e}")
             return pd.DataFrame()
 
+    def get_cik_to_figi_mapping(self) -> dict:
+        """获取 CIK -> FIGI 映射 (用于 enrichment)"""
+        from src.model.us_stock_universe_model import UsStockUniverseModel
+        sql = UsStockUniverseModel.QUERY_CIK_TO_FIGI_MAPPING_SQL
+        try:
+            df = self.db.client.query_df(sql)
+            return dict(zip(df["cik"].astype(str), df["composite_figi"].astype(str)))
+        except Exception as e:
+            app_logger.warning(f"⚠️ 获取 CIK->FIGI 映射失败: {e}")
+            return {}
+
     def get_figi_mapping_by_tickers(self, tickers: list[str]) -> dict:
         if not tickers:
             return {}
@@ -151,7 +168,7 @@ class MarketDataRepo:
             app_logger.error(f"插入基准ETF K线数据失败: {e}")
             raise e
 
-    def get_latest_benchmark_etf_klines(self, ticker: str) -> datetime:
+    def get_latest_benchmark_etf_klines(self, ticker: str) -> Optional[datetime]:
         from src.model.us_benchmark_etf_kline_model import BenchmarkEtfKlineModel
 
         query = BenchmarkEtfKlineModel.QUERY_LATEST_TS_BY_TICKER_SQL.format(
@@ -161,13 +178,14 @@ class MarketDataRepo:
             res = self.db.client.query_df(query)
             last_ts = res.iloc[0]["last_ts"]
             if pd.notna(last_ts):
-                return pd.to_datetime(last_ts).replace(tzinfo=ZoneInfo("UTC"))
-            start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
+                dt = pd.to_datetime(last_ts).replace(tzinfo=ZoneInfo("UTC"))
+                # ClickHouse max(DateTime) on empty table returns 1970-01-01
+                if dt.year > 1970:
+                    return dt
+            return None
         except Exception as e:
             app_logger.error(f"查询最新基准ETF K线时间戳失败: {e}")
-            start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
+            return None
 
     def insert_macro_daily_klines(self, df: pd.DataFrame):
         # 此时传进来的 df 已经是被 Model 洗干净的了
@@ -175,7 +193,7 @@ class MarketDataRepo:
 
     def get_latest_trade_date_in_macro_daily_klines(
         self, symbols: list | dict | str
-    ) -> str:
+    ) -> Optional[str]:
         if isinstance(symbols, dict):
             target_symbols = list(symbols.values())
         elif isinstance(symbols, str):
@@ -187,9 +205,9 @@ class MarketDataRepo:
 
         if not target_symbols:
             app_logger.error(f"symbols 参数非法: {symbols}")
-            return os.getenv("SCRAPING_START_DATE", "2014-01-01")
+            return None
 
-        symbols_str = "','".join(target_symbols)
+        symbols_str = "'" + "','".join(target_symbols) + "'"
 
         from src.model.us_macro_daily_kline_model import UsMacroDailyKlineModel
 
@@ -198,20 +216,22 @@ class MarketDataRepo:
         )
 
         try:
-            res = self.db.client.query_df(query)  # 假设你单例调用是这样
+            res = self.db.client.query_df(query)
 
-            # 🌟 修复: 提取的列名必须是 'ts'
             last_date = res.iloc[0]["ts"]
 
             if pd.isna(last_date):
-                return os.getenv("SCRAPING_START_DATE", "2014-01-01")
+                return None
 
-            # 🌟 安全保障: 强制转为 datetime 再提取字符串，防止 ClickHouse 原生 date 类型报错
-            return pd.to_datetime(last_date).strftime("%Y-%m-%d")
+            dt = pd.to_datetime(last_date)
+            # 过滤 ClickHouse 空表返回的 1970
+            if dt.year > 1970:
+                return dt.strftime("%Y-%m-%d")
+            return None
 
         except Exception as e:
             app_logger.error(f"查询最新交易日期失败: {e}")
-            return os.getenv("SCRAPING_START_DATE", "2014-01-01")
+            return None
 
     # 用来存已经delisted的个股已经抓取完了用1表示。没有delisted或者没有抓取完就是0。
     def update_sync_status(
@@ -245,7 +265,7 @@ class MarketDataRepo:
 
     def get_latest_macro_indicators(
         self, indicator_code: list | dict | str
-    ) -> datetime:
+    ) -> Optional[datetime]:
         if isinstance(indicator_code, dict):
             target_codes = list(indicator_code.values())
         elif isinstance(indicator_code, str):
@@ -257,9 +277,8 @@ class MarketDataRepo:
 
         if not target_codes:
             app_logger.error(f"indicator_code 参数非法: {indicator_code}")
-            start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
-        target_codes_str = "','".join(target_codes)
+            return None
+        target_codes_str = "'" + "','".join(target_codes) + "'"
         from src.model.us_macro_indicators_model import UsMacroIndicatorsModel
 
         query = UsMacroIndicatorsModel.MAX_PUBLISHED_TIMESTAMP_QUERY_SQL.format(
@@ -269,11 +288,10 @@ class MarketDataRepo:
             res = self.db.client.query_df(query)
             last_ts = res.iloc[0]["last_ts"]
             if pd.notna(last_ts):
-                return pd.to_datetime(last_ts).replace(tzinfo=ZoneInfo("UTC"))
-
-            start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
+                dt = pd.to_datetime(last_ts).replace(tzinfo=ZoneInfo("UTC"))
+                if dt.year > 1970:
+                    return dt
+            return None
         except Exception as e:
             app_logger.error(f"查询最新宏观指标时间戳失败: {e}")
-            start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
+            return None

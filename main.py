@@ -1,5 +1,4 @@
 import signal
-import sys
 from importlib import import_module
 
 from src.utils.logger import app_logger
@@ -9,7 +8,6 @@ from dotenv import load_dotenv
 
 SCRAPER_SPECS = [
     ("src.massive_kline_scraper", "MassiveKlineScraper"),
-    ("src.massive_fundamentals_scraper", "MassiveFundamentalsScraper"),
     ("src.massive_benchmark_scraper", "MassiveBenchmarkScraper"),
     ("src.massive_news_scraper", "MassiveNewsScraper"),
     ("src.massive_actions_scraper", "MassiveActionsScraper"),
@@ -18,6 +16,7 @@ SCRAPER_SPECS = [
     ("src.yahoo_finance_macro_scraper", "YahooMacroScraper"),
     ("src.forex_factory_scraper", "ForexFactoryScraper"),
     ("src.cboe_scraper", "CboeScraper"),
+    ("src.sec_edgar_scraper", "SecEdgarScraper"),
 ]
 
 
@@ -72,11 +71,17 @@ class ScraperOrchestrator:
             self.handle_exit()
 
     def handle_exit(self, sig=None, frame=None):
+        import os
         if self.is_running:
             self.is_running = False
-            self.stop_all()
-            self.scheduler.shutdown(wait=False)
-            sys.exit(0)
+            try:
+                self.stop_all()
+                self.scheduler.shutdown(wait=False)
+            except Exception as e:
+                app_logger.error(f"关闭调度器报错: {e}")
+            # 使用 os._exit(0) 强制越过 ThreadPoolExecutor 的 atexit 钩子
+            # 否则若有爬虫线程正在进行耗时请求，Python 将一直阻塞等待它们完成
+            os._exit(0)
 
 
 if __name__ == "__main__":

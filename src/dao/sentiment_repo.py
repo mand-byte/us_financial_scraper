@@ -10,8 +10,12 @@ from src.utils.logger import app_logger
 
 
 class SentimentRepo:
+    @property
+    def db(self):
+        return get_db_manager()
+
     def __init__(self):
-        self.db = get_db_manager()
+        pass
 
     def insert_gdelt_macro_sentiment(self, df: pd.DataFrame) -> None:
         if df.empty:

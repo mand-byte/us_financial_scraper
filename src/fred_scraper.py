@@ -1,9 +1,6 @@
 import os
-import time
 import pandas as pd
 from zoneinfo import ZoneInfo
-import threading
-from datetime import datetime, timedelta
 from fredapi import Fred
 
 from src.dao.market_data_repo import MarketDataRepo
@@ -13,7 +10,6 @@ from src.utils.constants import Fred_Indicator_Code
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 
-from zoneinfo import ZoneInfo
 
 
 class FredScraper:

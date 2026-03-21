@@ -1,4 +1,5 @@
 import yfinance as yf
+import os
 from src.dao.market_data_repo import MarketDataRepo
 from src.utils.logger import app_logger
 from src.utils.constants import Yahoo_Indicator_Code
@@ -17,6 +18,7 @@ class YahooMacroScraper:
         self.scheduler = scheduler
         self.tickers = Yahoo_Indicator_Code
         self.repo = MarketDataRepo()
+        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
 
     def fetch_and_save(self, start_date="2014-01-01"):
         """
@@ -92,6 +94,9 @@ class YahooMacroScraper:
         last_date_str = self.repo.get_latest_trade_date_in_macro_daily_klines(
             list(self.tickers.values())
         )
+        if last_date_str is None:
+            last_date_str = self.COLD_START_DATE
+            
         self.fetch_and_save(start_date=last_date_str)
 
         # 2. 每日 18:30 NYC 执行同步 (收盘后)

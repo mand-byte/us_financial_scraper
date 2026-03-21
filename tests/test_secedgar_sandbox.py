@@ -2,8 +2,12 @@ import os
 
 import pytest
 
-secedgar = pytest.importorskip("secedgar")
-from secedgar import FilingType, filings
+try:
+    import secedgar
+    from secedgar import FilingType, filings
+except ImportError:
+    secedgar = None
+    pytest.skip("secedgar not installed", allow_module_level=True)
 
 
 def test_secedgar(tmp_path):

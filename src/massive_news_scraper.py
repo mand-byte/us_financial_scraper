@@ -67,6 +67,8 @@ class MassiveNewsScraper:
     def fectch_news(self):
 
         last_ts = self.fundamental_repo.get_global_latest_news_timestamp()
+        if not isinstance(last_ts, pd.Timestamp):
+            last_ts = pd.Timestamp(last_ts)
         ts = last_ts.tz_convert("UTC") if last_ts.tzinfo else last_ts.tz_localize("UTC")
         date_raw = self.massive.get_stock_news(
             published_utc_type="published_utc.gt", date=ts.isoformat()

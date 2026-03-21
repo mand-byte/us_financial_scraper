@@ -23,7 +23,6 @@ class UsMacroIndicatorsModel(BaseClickHouseModel):
         "indicator_code": {"type": "str"},
         "actual_value": {"type": "float64", "default": 0.0},
         "expected_value": {"type": "float64", "default": None},
-        "update_time": {"type": "datetime", "tz": "UTC"},
     }
 
     MAX_PUBLISHED_TIMESTAMP_QUERY_SQL: ClassVar[str] = (

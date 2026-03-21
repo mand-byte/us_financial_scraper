@@ -18,6 +18,7 @@ class UsStock10kSectionsRawModel(BaseClickHouseModel):
                 section String CODEC(ZSTD(3)),        -- Standardized section identifier from the filing (e.g. 'business', 'risk_factors', etc.).
                 update_time DateTime64(3, 'UTC') DEFAULT now64(3)
             ) ENGINE = ReplacingMergeTree(update_time)
+            ORDER BY (composite_figi, filing_date, section)
         """
 
     SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {

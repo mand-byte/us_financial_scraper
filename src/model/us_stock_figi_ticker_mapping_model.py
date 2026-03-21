@@ -41,4 +41,8 @@ class UsStockFigiTickerMappingModel(BaseClickHouseModel):
             df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
         if "update_time" in df.columns:
             df["update_time"] = pd.to_datetime(df["update_time"])
+        if "composite_figi" in df.columns:
+            df["composite_figi"] = df["composite_figi"].apply(lambda x: x.decode('utf-8', 'ignore') if isinstance(x, bytes) else str(x) if pd.notna(x) else "")
+        if "ticker" in df.columns:
+            df["ticker"] = df["ticker"].apply(lambda x: x.decode('utf-8', 'ignore') if isinstance(x, bytes) else str(x) if pd.notna(x) else "")
         return df

@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 # 负责 表3,4,5,8,9 ,10(基本面,资金,个股新闻)
-from .clickhouse_manager import get_db_manager
 from src.utils.logger import app_logger
 import pandas as pd
 from datetime import datetime, date
@@ -12,8 +11,13 @@ from src.model import UsStockNewsRawModel
 class FundamentalRepo:
     SCRAPING_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
 
+    @property
+    def db(self):
+        from src.dao.clickhouse_manager import get_db_manager
+        return get_db_manager()
+
     def __init__(self):
-        self.db = get_db_manager()
+        pass
 
 
 

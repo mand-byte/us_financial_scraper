@@ -1,5 +1,4 @@
 import logging
-import pandas as pd
 from datetime import datetime
 from src.forexfactory_scraper.scraper import scrape_month
 
@@ -41,12 +40,12 @@ def discover_ids(keyword=None, currency='USD', year=None, month_label=None):
     results = df[['EventID', 'Title']].drop_duplicates(subset=['EventID'])
     
     print("\n" + "="*60)
-    print(f"🎯 匹配到的指标 ID 列表:")
+    print("🎯 匹配到的指标 ID 列表:")
     print("="*60)
     for _, row in results.sort_values('Title').iterrows():
         print(f"ID: {row['EventID']:<10} | 名称: {row['Title']}")
     print("="*60)
-    print(f"💡 提示: 请将需要的 ID 复制到 src/utils/constants.py 的 ForexFactory_Indicator_Code 中。")
+    print("💡 提示: 请将需要的 ID 复制到 src/utils/constants.py 的 ForexFactory_Indicator_Code 中。")
 
 if __name__ == "__main__":
     import sys

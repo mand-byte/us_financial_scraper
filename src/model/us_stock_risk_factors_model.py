@@ -12,7 +12,7 @@ class UsStockRiskFactorsModel(BaseClickHouseModel):
                 composite_figi FixedString(12),
                 cik Nullable(String),
                 ticker Nullable(String),
-                filing_date Nullable(Date),
+                filing_date Date,
                 primary_category LowCardinality(String),
                 secondary_category LowCardinality(String),
                 tertiary_category LowCardinality(String),

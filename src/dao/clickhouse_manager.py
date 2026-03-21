@@ -3,6 +3,7 @@ import os
 import pkgutil
 import importlib
 import pandas as pd
+import threading
 from src.utils.logger import app_logger
 
 # 引入顶层包以供扫描
@@ -22,6 +23,18 @@ class ClickHouseManager:
 
         # 建立连接
         try:
+            # 首次尝试带数据库名连接
+            self.client: clickhouse_connect.driver.client.Client = (
+                clickhouse_connect.get_client(
+                    host=self.host,
+                    port=self.port,
+                    username=self.username,
+                    password=self.password,
+                    database=self.database,
+                )
+            )
+        except Exception:
+            # 如果数据库不存在，则连默认库并创建
             self.client: clickhouse_connect.driver.client.Client = (
                 clickhouse_connect.get_client(
                     host=self.host,
@@ -30,14 +43,33 @@ class ClickHouseManager:
                     password=self.password,
                 )
             )
-
-            # 确保数据库存在
             self.client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
             self.client.command(f"USE {self.database}")
+
+        try:
+            # Monkey Patch: 全局自动剔除值为全空的 update_time，交由 CH default now64(3) 计算，避免 None 序列化报错
+            # 同时确保每次 insert 都带上正确的 database 参数，防止漂移到 default
+            original_insert_df = self.client.insert_df
+
+            def custom_insert_df(table, df, *args, **kwargs):
+                if df is not None and not df.empty and "update_time" in df.columns:
+                    if df["update_time"].isna().all():
+                        df = df.drop(columns=["update_time"])
+                if "column_names" not in kwargs and df is not None:
+                    kwargs["column_names"] = tuple(df.columns)
+
+                # 强行注入数据库上下文，防止 clickhouse-connect 默认回到 'default'
+                if "database" not in kwargs:
+                    kwargs["database"] = self.database
+
+                return original_insert_df(table, df, *args, **kwargs)
+
+            self.client.insert_df = custom_insert_df
+
         except Exception as e:
             app_logger.error(f"❌ 连接 ClickHouse 失败: {str(e)}")
             exit(1)  # 连接失败直接退出，避免后续操作报错
-            
+
         # 激活所有模型并建表
         self._load_all_models()
         self._init_all_tables()
@@ -70,6 +102,14 @@ class ClickHouseManager:
             return
         self.client.insert_df(table=model_cls.table_name, df=df)
 
+    def query_dataframe(self, sql: str) -> pd.DataFrame:
+        """执行 SQL 查询并返回 DataFrame"""
+        result = self.client.query(sql)
+        if isinstance(result.result_set, list):
+            columns = result.column_names
+            return pd.DataFrame(result.result_set, columns=columns)
+        return result.result_set.to_pandas()
+
     def close(self):
         self.client.close()
 
@@ -77,18 +117,18 @@ class ClickHouseManager:
 # ==========================================
 # 🌟 Pythonic 单例模式 (懒加载)
 # ==========================================
-_global_db_manager = None
+
+_thread_local = threading.local()
 
 
 def get_db_manager() -> ClickHouseManager:
     """
     全局唯一获取 DB 连接的入口。
-    如果是第一次调用，会建立连接；后续调用直接返回已有的连接。
+    为了解决并发报错，改为基于 thread_local 的伪单例，每个线程持有一个专门的 Client。
     """
-    global _global_db_manager
-    if _global_db_manager is None:
-        _global_db_manager = ClickHouseManager()
-    return _global_db_manager
+    if getattr(_thread_local, "db_manager", None) is None:
+        _thread_local.db_manager = ClickHouseManager()
+    return _thread_local.db_manager
 
 
 if __name__ == "__main__":

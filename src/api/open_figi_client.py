@@ -22,20 +22,26 @@ class OpenFIGIClient:
             100 if self.api_key else 10
         )  # V3 限制：有 Key 100个，无 Key 10个
 
-    def fetch_figis(self, tickers: List[str], exch_code: str = "US") -> pd.DataFrame:
+    def fetch_figis(self, tasks: List[Dict[str, str]]) -> pd.DataFrame:
         """
         批量获取 FIGI 映射关系
-        :param tickers: Ticker 列表
-        :param exch_code: 交易所代码 (如 US, HK)
+        :param tasks: 包含 ticker 和 primary_exchange 的字典列表 [{'ticker': 'AAPL', 'primary_exchange': 'XNAS'}, ...]
         :return: 包含 ticker, figi, name 的 DataFrame
         """
         results_all = []
         # 1. 自动化分批处理
-        for i in range(0, len(tickers), self.batch_size):
-            batch = tickers[i : i + self.batch_size]
-            jobs = [
-                {"idType": "TICKER", "idValue": t, "exchCode": exch_code} for t in batch
-            ]
+        for i in range(0, len(tasks), self.batch_size):
+            batch = tasks[i : i + self.batch_size]
+            jobs = []
+            for item in batch:
+                # 统一使用 exchCode='US' 而不是具体的 micCode (如 XNAS).
+                # 经验证实 OpenFIGI 在 micCode 下对某些资产类别(如 B类股/ADR)索引不全，通用 US 码命中率更高。
+                job = {
+                    "idType": "TICKER",
+                    "idValue": item["ticker"],
+                    #"exchCode": "US"
+                }
+                jobs.append(job)
 
             app_logger.info(f"正在请求 OpenFIGI 映射: {len(batch)} 个 Ticker")
 
@@ -44,7 +50,8 @@ class OpenFIGIClient:
                 if response:
                     # 2. 解析返回结果 (OpenFIGI 返回列表嵌套列表)
                     for idx, item in enumerate(response):
-                        ticker = batch[idx]
+                        task_item = batch[idx]
+                        ticker = task_item["ticker"]
                         data = item.get("data")
                         if data:
                             # 默认取第一个匹配项 (通常是 Primary Listing)
@@ -54,7 +61,7 @@ class OpenFIGIClient:
                                     "ticker": ticker,
                                     "composite_figi": primary.get("compositeFIGI"),
                                     "name": primary.get("name"),
-                                    "exch_code": exch_code,
+                                    "exch_code": "US",#task_item.get("primary_exchange", "US"),
                                 }
                             )
                         else:
