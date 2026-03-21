@@ -161,6 +161,14 @@ class MarketDataRepo:
             app_logger.error(f"查询 tickers 历史映射失败: {e}")
             return pd.DataFrame()
 
+    def is_mapping_table_empty(self) -> bool:
+        """检查 mapping 表是否为空"""
+        try:
+            res = self.db.client.command("SELECT count() FROM us_stock_figi_ticker_mapping")
+            return int(res) == 0
+        except Exception:
+            return True
+
     def insert_benchmark_etf_klines(self, df: pd.DataFrame):
         try:
             self.db.client.insert_df("us_benchmark_etf_klines", df)

@@ -11,7 +11,7 @@ class UsStockMinutesKlineModel(BaseClickHouseModel):
     __DDL__: ClassVar[str] = """
         CREATE TABLE IF NOT EXISTS us_minutes_klines
         (
-            composite_figi   String,
+            composite_figi   FixedString(12),
             timestamp        DateTime64(3, 'UTC'),
             open             Float64,
             high             Float64,
@@ -65,6 +65,9 @@ class UsStockMinutesKlineModel(BaseClickHouseModel):
             if col not in df.columns:
                 df[col] = meta.get("default", None)
 
+        df["composite_figi"] = df["composite_figi"].apply(
+            lambda x: x.decode("utf-8") if isinstance(x, bytes) else str(x) if pd.notna(x) else ""
+        )
         df["composite_figi"] = (
             df["composite_figi"]
             .fillna(str(composite_figi))

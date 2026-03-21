@@ -20,6 +20,7 @@ class GDELTScraper:
         self.scheduler = scheduler
         # 核心关注的 CAMEO 根代码 (系统性风险)
         self.target_codes = ["16", "17", "18", "19", "20"]
+        self.remote_fail_counts = {}
 
     def fetch_and_process_v2(self, file_url, timestamp_str):
         """处理 GDELT 2.0 15分钟增量文件并转换为智能加权聚合宽表记录"""
@@ -31,7 +32,8 @@ class GDELTScraper:
         try:
             r = requests.get(file_url, timeout=30)
             if r.status_code != 200:
-                return 0
+                app_logger.warning(f"❌ GDELT 远程服务器错误 {filename}，HTTP状态码: {r.status_code}")
+                return -1
 
             # 1. 极速读取内存中的 ZIP 内容
             z = zipfile.ZipFile(io.BytesIO(r.content))
@@ -115,6 +117,9 @@ class GDELTScraper:
 
             return 1
 
+        except requests.exceptions.RequestException as e:
+            app_logger.error(f"❌ GDELT 自身网络请求失败 {filename}: {str(e)}")
+            return 0
         except Exception as e:
             app_logger.error(f"❌ GDELT 处理文件 {filename} 失败: {str(e)}")
             return 0
@@ -149,22 +154,25 @@ class GDELTScraper:
                     continue
                 if file_ts > start_ts:
                     app_logger.info(f"📥 聚合 GDELT 开始下载文件: {file_ts_str}")
-                    success = self.fetch_and_process_v2(file_url, file_ts_str)
-                    if success:
+                    status = self.fetch_and_process_v2(file_url, file_ts_str)
+                    if status == 1:
                         start_ts = file_ts
-                    else:
-                        app_logger.warning(
-                            f"⚠️ GDELT 文件下载失败: {file_ts_str}， 10秒后再试一次"
-                        )
-                        time.sleep(10)
-                        success = self.fetch_and_process_v2(file_url, file_ts_str)
-                        if success:
+                        self.remote_fail_counts.pop(file_ts_str, None)
+                    elif status == -1:
+                        # 远程服务器问题
+                        fails = self.remote_fail_counts.get(file_ts_str, 0) + 1
+                        self.remote_fail_counts[file_ts_str] = fails
+                        if fails >= 3:
+                            app_logger.error(f"🧨 GDELT 文件远程错误达到 3 次，跳过该文件: {file_ts_str}")
                             start_ts = file_ts
+                            self.remote_fail_counts.pop(file_ts_str, None)
                         else:
-                            app_logger.error(
-                                f"🧨 GDELT 文件重试失败: {file_ts_str}，停止本次增量同步，等待下次运行从该文件重试"
-                            )
+                            app_logger.warning(f"⚠️ GDELT 文件远程错误 (第 {fails} 次): {file_ts_str}，停止本次增量，等待下次调度")
                             return
+                    else:
+                        # 自身网络问题或解析问题
+                        app_logger.error(f"🛑 GDELT 自身网络或解析异常：{file_ts_str}，一直卡住等待恢复")
+                        return
 
         except Exception as e:
             app_logger.error(f"❌ GDELT 获取列表失败: {str(e)}")

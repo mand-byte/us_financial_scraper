@@ -8,15 +8,15 @@ from dotenv import load_dotenv
 
 SCRAPER_SPECS = [
     ("src.massive_kline_scraper", "MassiveKlineScraper"),
-    ("src.massive_benchmark_scraper", "MassiveBenchmarkScraper"),
-    ("src.massive_news_scraper", "MassiveNewsScraper"),
-    ("src.massive_actions_scraper", "MassiveActionsScraper"),
-    ("src.fred_scraper", "FredScraper"),
-    ("src.gdelt_scraper", "GDELTScraper"),
-    ("src.yahoo_finance_macro_scraper", "YahooMacroScraper"),
-    ("src.forex_factory_scraper", "ForexFactoryScraper"),
-    ("src.cboe_scraper", "CboeScraper"),
-    ("src.sec_edgar_scraper", "SecEdgarScraper"),
+    # ("src.massive_benchmark_scraper", "MassiveBenchmarkScraper"),
+    #("src.massive_news_scraper", "MassiveNewsScraper"),
+    # ("src.massive_actions_scraper", "MassiveActionsScraper"),
+    # ("src.fred_scraper", "FredScraper"),
+    # ("src.gdelt_scraper", "GDELTScraper"),
+    # ("src.yahoo_finance_macro_scraper", "YahooMacroScraper"),
+    # ("src.forex_factory_scraper", "ForexFactoryScraper"),
+    # ("src.cboe_scraper", "CboeScraper"),
+    # ("src.sec_edgar_scraper", "SecEdgarScraper"),
 ]
 
 

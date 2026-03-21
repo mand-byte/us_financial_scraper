@@ -10,7 +10,7 @@ class UsStockNewsRawModel(BaseClickHouseModel):
             CREATE TABLE IF NOT EXISTS us_stock_news_raw
             (
                 news_id String,                          -- 建议用 URL 或 (标题+时间) 的 MD5 哈希
-                composite_figi String,
+                composite_figi FixedString(12),
                 published_utc DateTime64(3, 'UTC'),
                 title String CODEC(ZSTD(3)),             -- 长文本开启 ZSTD 高级压缩
                 description String CODEC(ZSTD(3)),
@@ -58,7 +58,12 @@ class UsStockNewsRawModel(BaseClickHouseModel):
         }
         for col, length in str_cols.items():
             if col in df.columns:
-                df[col] = df[col].astype(str)
+                # 拦截 DB 查询返回的 FixedString(bytes) 格式，显式解码
+                df[col] = df[col].apply(
+                    lambda x: x.decode("utf-8", "ignore") if isinstance(x, bytes) else x
+                )
+                df[col] = df[col].fillna("").astype(str)
+                df[col] = df[col].replace({"nan": "", "None": ""})
                 if length:
                     df[col] = df[col].str.slice(0, length)
 

@@ -85,13 +85,7 @@ class MassiveApi:
         result_raw = []
         try:
             data_ = self.request("GET", endpoint, clean_params)
-            while data_:
-                result_raw.extend(data_.get("results", []))
-                next_url = data_.get("next_url")
-                if next_url:
-                    data_ = self.request("GET", next_url)
-                else:
-                    break
+            result_raw.extend(data_.get("results", []))
             return pd.DataFrame(result_raw)
 
         except Exception as e:
@@ -168,14 +162,9 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, clean_params)
             result_raw = []
-            while True:
-                results = data_.get("results", [])
-                result_raw.extend(results)
-                next_url = data_.get("next_url")
-                if next_url:
-                    data_ = self.request("GET", next_url)
-                else:
-                    break
+            
+            results = data_.get("results", [])
+            result_raw.extend(results)
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(f"抓取新闻数据失败 [date: {date}]: {e}")
@@ -218,14 +207,9 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, params)
             result_raw = []
-            while True:
-                result_raw.extend(data_.get("results", []))
-                # 检查下一页
-                next_url = data_.get("next_url")
-                if next_url:
-                    data_ = self.request("GET", next_url)
-                else:
-                    break
+            
+            result_raw.extend(data_.get("results", []))
+                
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(
@@ -245,14 +229,9 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, params)
             result_raw = []
-            while True:
-                result_raw.extend(data_.get("results", []))
-                # 检查下一页
-                next_url = data_.get("next_url")
-                if next_url:
-                    data_ = self.request("GET", next_url)
-                else:
-                    break
+            
+            result_raw.extend(data_.get("results", []))
+                
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(
@@ -278,14 +257,9 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, params)
             result_raw = []
-            while True:
-                result_raw.extend(data_.get("results", []))
+            
+            result_raw.extend(data_.get("results", []))
 
-                next_url = data_.get("next_url")
-                if next_url:
-                    data_ = self.request("GET", next_url)
-                else:
-                    break
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(
@@ -312,14 +286,9 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, params)
             result_raw = []
-            while True:
-                result_raw.extend(data_.get("results", []))
+            
+            result_raw.extend(data_.get("results", []))
 
-                next_url = data_.get("next_url")
-                if next_url:
-                    data_ = self.request("GET", next_url)
-                else:
-                    break
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(
@@ -341,14 +310,9 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, params)
             result_raw = []
-            while True:
-                result_raw.extend(data_.get("results", []))
+            
+            result_raw.extend(data_.get("results", []))
 
-                next_url = data_.get("next_url")
-                if next_url:
-                    data_ = self.request("GET", next_url)
-                else:
-                    break
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(f"抓取 Risk Taxonomy 数据失败: {e}")

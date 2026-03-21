@@ -43,7 +43,7 @@ class OpenFIGIClient:
                 }
                 jobs.append(job)
 
-            app_logger.info(f"正在请求 OpenFIGI 映射: {len(batch)} 个 Ticker")
+            #app_logger.info(f"正在请求 OpenFIGI 映射: {len(batch)} 个 Ticker")
 
             try:
                 response = self._make_request(jobs)

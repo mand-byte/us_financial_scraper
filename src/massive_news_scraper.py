@@ -59,14 +59,20 @@ class MassiveNewsScraper:
             coalesce=True,
             replace_existing=True,
         )
-        logger.info("✅ Massive 新闻搜刮器已启动 (单日回刷3天模式)。")
+        logger.info("✅ Massive 新闻搜刮器已启动")
 
     def stop(self):
         logger.info("🛑 Massive 新闻搜刮器停止。")
 
     def fectch_news(self):
-
         last_ts = self.fundamental_repo.get_global_latest_news_timestamp()
+
+        if last_ts is None:
+            # 冷启动：使用环境变量定义的起点
+            last_ts = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d")
+            logger.info(f"新闻初次同步，使用冷启动存量日期: {self.COLD_START_DATE}")
+
+        logger.info(f"最新新闻时间戳: {last_ts}")
         if not isinstance(last_ts, pd.Timestamp):
             last_ts = pd.Timestamp(last_ts)
         ts = last_ts.tz_convert("UTC") if last_ts.tzinfo else last_ts.tz_localize("UTC")

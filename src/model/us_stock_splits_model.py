@@ -55,7 +55,12 @@ class UsStockSplitsModel(BaseClickHouseModel):
             k: v.get("len") for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "str"
         }
         for col, length in str_cols.items():
-            df[col] = df[col].astype(str)
+            # 拦截 DB 查询返回的 FixedString(bytes) 格式，显式解码
+            df[col] = df[col].apply(
+                lambda x: x.decode("utf-8", "ignore") if isinstance(x, bytes) else x
+            )
+            df[col] = df[col].fillna("").astype(str)
+            df[col] = df[col].replace({"nan": "", "None": ""})
             if length:
                 df[col] = df[col].str.slice(0, length)
 

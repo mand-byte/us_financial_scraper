@@ -63,6 +63,10 @@ class MassiveActionsScraper:
 
     def fetch_dividends(self):
         last_date = self.fundamental_repo.get_global_latest_stock_dividends_date()
+        if last_date is None:
+             last_date = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").date()
+             logger.info(f"派息初次同步，使用冷启动日期: {self.COLD_START_DATE}")
+
         date_str = last_date.strftime("%Y-%m-%d")
 
         logger.info(f"🚀 拉取派息数据 (起: {date_str})...")
@@ -133,6 +137,10 @@ class MassiveActionsScraper:
 
     def fetch_splits(self):
         last_date = self.fundamental_repo.get_global_latest_stock_splits_date()
+        if last_date is None:
+             last_date = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").date()
+             logger.info(f"拆分初次同步，使用冷启动日期: {self.COLD_START_DATE}")
+
         date_str = last_date.strftime("%Y-%m-%d")
 
         logger.info(f"🚀 拉取股票拆分数据 (起: {date_str})...")

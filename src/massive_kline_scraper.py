@@ -90,7 +90,12 @@ class MassiveKlineScraper:
             figi = row.composite_figi
             raw_data = self.massive.get_ticker_events(ticker)
             if raw_data is None:
-                logger.error(f"Massive: 获取 {ticker} 的 ticker events 失败")
+                logger.warning(f"Massive: 获取 {ticker} 的 ticker events 失败")
+                result.append({
+                    "composite_figi": figi,
+                    "ticker": ticker,
+                    "date": "1970-01-01",
+                })
                 continue
             events = raw_data.get("events", [])
 
@@ -101,14 +106,27 @@ class MassiveKlineScraper:
                     "date": event["date"],
                 }
                 for event in events
-                if "ticker_change" in event
+                if "ticker_change" in event 
+                and event.get("ticker_change", {}).get("ticker")
+                and event.get("date")
             ]
             if ticker_date_map:
                 result.extend(ticker_date_map)
+            
+            # 增量写入，防止进程中断导致全量丢失 (1.9w 股票需要跑很久)
+            if len(result) >= 500:
+                data_raw = pd.DataFrame(result)
+                data = UsStockFigiTickerMappingModel.format_dataframe(data_raw)
+                if not data.empty:
+                    self.repo.insert_us_stock_figi_ticker_mapping(data)
+                    logger.info(f"Massive: 已增量写入 {len(data)} 条 FIGI 映射历史。")
+                result = []
+
         if result:
             data_raw = pd.DataFrame(result)
             data = UsStockFigiTickerMappingModel.format_dataframe(data_raw)
-            self.repo.insert_us_stock_figi_ticker_mapping(data)
+            if not data.empty:
+                self.repo.insert_us_stock_figi_ticker_mapping(data)
 
     def enrich_figi(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -157,70 +175,59 @@ class MassiveKlineScraper:
             # 立即清洗老数据，防止 ClickHouse 返回的 bytes 类型污染后续处理流
             old_df = UsStockUniverseModel.format_dataframe(old_df)
         try:
-            # 1. 抓取当前所有活跃股票 (包括 CS, ADRC 等)
-            all_active_dfs = []
-            logger.info("  正在通过 ticker 顺序迭代拉取全量活跃股票...")
+            # 1. 全量抓取股票 (不区分活跃状态，由 API 或后续逻辑统一处理)
+            all_tickers_dfs = []
+            logger.info("  正在通过 ticker 顺序迭代拉取全量 Ticker 列表...")
             
-            # 初始拉取
-            tickers_raw = self.massive.get_all_tickers(active=True, type_name=None, sort_type="ticker")
-            if tickers_raw is None or tickers_raw.empty:
-                logger.error("Massive: 首次获取活跃股票列表失败,等待调度器下次运行")
-                return
-            
-            all_active_dfs.append(tickers_raw)
-            start_ticker_with = tickers_raw.iloc[-1]["ticker"]
-            
-            # Ticker.gt 顺序迭代
-            while True:
-                tickers_raw = self.massive.get_all_tickers(
-                    active=True,
-                    type_name=None,
-                    ticker_filter_type="ticker.gt",
-                    ticker=start_ticker_with,
-                    sort_type="ticker",
-                )
-                if tickers_raw is None:
-                    logger.error("Massive: 迭代获取股票列表中断,等待调度器下次运行")
-                    return
-                if tickers_raw.empty:
-                    break
-                    
-                all_active_dfs.append(tickers_raw)
-                start_ticker_with = tickers_raw.iloc[-1]["ticker"]
-                
-                # 如果返回数量小于 limit(1000)，说明是最后一页
-                if len(tickers_raw) < 1000:
-                    break
-            
-            all_active_raw = pd.concat(all_active_dfs, ignore_index=True)
-            logger.info(f"✅ 成功拉取到 {len(all_active_raw)} 个活跃 Ticker。")
-
-            # 2. 抓取最近退市的股票
-            logger.info("  正在拉取最近退市股票列表...")
-            recent_delisted_raw = self.massive.get_all_tickers(
-                active=False, type_name=None, sort_type="delisted_utc", order="desc"
-            )
-
-            # 3. 探测失踪存量 (Vanished Detection)
-            vanished_df = pd.DataFrame()
-            if not old_df.empty:
-                old_active = set(old_df[old_df["active"] == 1]["ticker"])
-                new_active = set(all_active_raw["ticker"])
-                vanished_tickers = list(old_active - new_active)
-                
-                if vanished_tickers:
-                    logger.info(f"  探测到 {len(vanished_tickers)} 个可能已退市的存量股票，正在确认状态...")
-                    vanished_results = []
-                    for t in vanished_tickers[:200]:
-                        v_raw = self.massive.get_all_tickers(ticker=t, active=False, limit=1)
-                        if v_raw is not None and not v_raw.empty:
-                            vanished_results.append(v_raw)
-                    if vanished_results:
-                        vanished_df = pd.concat(vanished_results, ignore_index=True)
-
-            # 4. 合并所有获取到的 Ticker 消息
-            all_tickers_raw = pd.concat([all_active_raw, recent_delisted_raw, vanished_df], ignore_index=True)
-            all_tickers_raw.drop_duplicates(subset=["ticker", "active"], inplace=True)
+            tickers_raw = self.massive.get_all_tickers(sort_type="ticker", active=True)
+            if tickers_raw is not None and not tickers_raw.empty:
+                all_tickers_dfs.append(tickers_raw)
+                last_ticker = tickers_raw.iloc[-1]["ticker"]
+              
+                while True:
+                    tickers_raw = self.massive.get_all_tickers(
+                        ticker_filter_type="ticker.gt",
+                        ticker=last_ticker,
+                        sort_type="ticker",
+                        active=True
+                    )
+                    if tickers_raw is None:
+                        logger.error("Massive: 迭代获取股票列表中断,等待调度器下次运行")
+                        return
+                    if tickers_raw.empty:
+                        break
+                    all_tickers_dfs.append(tickers_raw)
+                    last_ticker = tickers_raw.iloc[-1]["ticker"]
+                    if len(tickers_raw)<self.API_TICKERS_MAX_LIMIT:
+                        break
+            else:
+                logger.error(f"Massive: api 返回为空，等待调度器下次运行")
+                return 
+            tickers_raw = self.massive.get_all_tickers(sort_type="ticker", active=False)
+            if tickers_raw is not None and not tickers_raw.empty:
+                all_tickers_dfs.append(tickers_raw)
+                last_ticker = tickers_raw.iloc[-1]["ticker"]
+              
+                while True:
+                    tickers_raw = self.massive.get_all_tickers(
+                        ticker_filter_type="ticker.gt",
+                        ticker=last_ticker,
+                        sort_type="ticker",
+                        active=False
+                    )
+                    if tickers_raw is None:
+                        logger.error("Massive: 迭代获取股票列表中断,等待调度器下次运行")
+                        return
+                    if tickers_raw.empty:
+                        break
+                    all_tickers_dfs.append(tickers_raw)
+                    last_ticker = tickers_raw.iloc[-1]["ticker"]
+                    if len(tickers_raw)<self.API_TICKERS_MAX_LIMIT:
+                        break
+            else:
+                logger.error(f"Massive: api 返回为空，等待调度器下次运行")
+                return      
+            all_tickers_raw = pd.concat(all_tickers_dfs, ignore_index=True)
             
             # 【过滤】仅保留普通股 (CS) 和 ADR (ADRC)，剔除权证、优先股、单元等
             if "type" in all_tickers_raw.columns:
@@ -237,6 +244,10 @@ class MassiveKlineScraper:
             # 3. 继承老表的 FIGI (基于 Ticker 映射)
             # 这一步是为了避免给 OpenFIGI 增加不必要的负担
             if not old_df.empty:
+                # 确保 FIGI 是字符串类型，防止 bytes 导致字典主键匹配失败
+                old_df["composite_figi"] = old_df["composite_figi"].apply(
+                    lambda x: x.decode("utf-8") if isinstance(x, bytes) else str(x) if pd.notna(x) else ""
+                )
                 ticker_to_figi = old_df.set_index("ticker")["composite_figi"].to_dict()
                 # 统一处理空值，确保 fillna 生效
                 all_tickers["composite_figi"] = all_tickers["composite_figi"].replace(
@@ -289,9 +300,11 @@ class MassiveKlineScraper:
                 # 6. 全量/增量写入（ReplacingMergeTree 会自动根据 FIGI 处理新增或更新）
                 self.repo.insert_stock_universe(final_to_insert)
 
-                # 7. 只有真正“新出现”的 Ticker 或变动，才去跑 Mapping 历史
-                # 建议：如果 old_df 为空，说明是首次，全跑；否则只跑新 Ticker
-                if old_df.empty:
+                # 7. 只有真正“新出现”的 Ticker 或变动，以及 Mapping 表为空时，才去跑 Mapping 历史
+                is_mapping_empty = self.repo.is_mapping_table_empty()
+                if old_df.empty or is_mapping_empty:
+                    if is_mapping_empty:
+                        logger.info("⚠️ 检测到 FIGI 映射表为空，开始执行存量补全...")
                     self.load_all_figi_ticker_mapping(final_to_insert)
                 else:
                     new_tickers = final_to_insert[
@@ -301,7 +314,17 @@ class MassiveKlineScraper:
                         self.load_all_figi_ticker_mapping(new_tickers)
 
             
+            # 4. 找出真正缺失 FIGI 的行进行补全
+            # 只要是新 Ticker 或者 依然没有 FIGI 的记录，都需要去 OpenFIGI 跑一趟
+            missing_figi_mask = (
+                (all_tickers["composite_figi"].isna())
+                | (all_tickers["composite_figi"] == "")
+                | (all_tickers["composite_figi"] == "nan")
+            )
 
+            if missing_figi_mask.any():
+                pending_df = all_tickers[missing_figi_mask].copy()
+                logger.info(f"发现 {len(pending_df)} 条记录缺失 FIGI，2执行补全...")
         except Exception as e:
             logger.error(f"宇宙表同步失败: {e}", exc_info=True)
 

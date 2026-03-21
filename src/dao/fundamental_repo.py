@@ -9,8 +9,6 @@ from src.model import UsStockNewsRawModel
 
 
 class FundamentalRepo:
-    SCRAPING_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-
     @property
     def db(self):
         from src.dao.clickhouse_manager import get_db_manager
@@ -37,11 +35,11 @@ class FundamentalRepo:
         try:
             res = self.db.client.query_df(query)
             last_date = res.iloc[0]["last_date"]
-            if pd.notna(last_date):
+            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
                 return pd.to_datetime(last_date).date()
-            return datetime.strptime(self.SCRAPING_START_DATE, "%Y-%m-%d").date()
+            return None
         except Exception:
-            return datetime.strptime(self.SCRAPING_START_DATE, "%Y-%m-%d").date()
+            return None
 
     def insert_stock_splits(self, df: pd.DataFrame):
         try:
@@ -59,14 +57,12 @@ class FundamentalRepo:
         try:
             res = self.db.client.query_df(query)
             last_date = res.iloc[0]["last_date"]
-            if pd.notna(last_date):
+            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
                 return pd.to_datetime(last_date).date()
-            time = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(time, "%Y-%m-%d").date()
+            return None
         except Exception as e:
             app_logger.error(f"查询{composite_figi}最新股票拆分时间失败: {e}")
-            time = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(time, "%Y-%m-%d").date()
+            return None
 
     def get_global_latest_stock_dividends_date(self) -> date:
         from src.model.us_stock_dividends_model import UsStockDividendsModel
@@ -75,14 +71,12 @@ class FundamentalRepo:
         try:
             res = self.db.client.query_df(query)
             last_date = res.iloc[0]["last_date"]
-            if pd.notna(last_date):
+            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
                 return pd.to_datetime(last_date).date()
-            time = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(time, "%Y-%m-%d").date()
+            return None
         except Exception as e:
             app_logger.error(f"全局派息时间查询失败: {e}")
-            time = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(time, "%Y-%m-%d").date()
+            return None
 
     def get_global_latest_stock_splits_date(self) -> date:
         from src.model.us_stock_splits_model import UsStockSplitsModel
@@ -91,14 +85,12 @@ class FundamentalRepo:
         try:
             res = self.db.client.query_df(query)
             last_date = res.iloc[0]["last_date"]
-            if pd.notna(last_date):
+            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
                 return pd.to_datetime(last_date).date()
-            time = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(time, "%Y-%m-%d").date()
+            return None
         except Exception as e:
             app_logger.error(f"全局股票拆分时间查询失败: {e}")
-            time = os.getenv("SCRAPING_START_DATE", "2014-01-01")
-            return datetime.strptime(time, "%Y-%m-%d").date()
+            return None
 
     def insert_stock_10k_sections_raw(self, df: pd.DataFrame):
         try:
@@ -118,19 +110,12 @@ class FundamentalRepo:
         try:
             res = self.db.client.query_df(query)
             last_ts = res.iloc[0]["last_ts"]
-            if pd.notna(last_ts):
+            if pd.notna(last_ts) and pd.to_datetime(last_ts).year > 1970:
                 return pd.to_datetime(last_ts)
-            app_logger.warning(
-                f"{cik} 在 us_stock_earnings_raw 中没有数据，返回默认开始时间"
-            )
-            return datetime.strptime(self.SCRAPING_START_DATE, "%Y-%m-%d").replace(
-                tzinfo=ZoneInfo("UTC")
-            )
+            return None
         except Exception as e:
             app_logger.error(f"查询{cik}最新财报原文时间戳失败: {e}")
-            return datetime.strptime(self.SCRAPING_START_DATE, "%Y-%m-%d").replace(
-                tzinfo=ZoneInfo("UTC")
-            )
+            return None
 
     def get_global_latest_news_timestamp(self) -> datetime:
         """获取全市场新闻原文表中的最新时间戳"""
@@ -139,16 +124,12 @@ class FundamentalRepo:
                 UsStockNewsRawModel.MAX_PUBLISHED_UTC_QUERY_SQL
             )
             last_ts = res.iloc[0]["last_ts"]
-            if pd.notna(last_ts):
+            if pd.notna(last_ts) and pd.to_datetime(last_ts).year > 1970:
                 return pd.to_datetime(last_ts)
-            return datetime.strptime(self.SCRAPING_START_DATE, "%Y-%m-%d").replace(
-                tzinfo=ZoneInfo("UTC")
-            )
+            return None
         except Exception as e:
             app_logger.error(f"查询全市场新闻最新时间戳失败: {e}")
-            return datetime.strptime(self.SCRAPING_START_DATE, "%Y-%m-%d").replace(
-                tzinfo=ZoneInfo("UTC")
-            )
+            return None
 
     def insert_stock_news_raw(self, df: pd.DataFrame):
         try:

@@ -20,13 +20,16 @@ class UsStockStateModel(BaseClickHouseModel):
         Standardize state update into a DataFrame.
         id_column: Name of the ID column ('cik' or 'composite_figi')
         """
-        if isinstance(ids, str):
+        if isinstance(ids, (str, bytes)):
             ids = [ids]
+        elif not isinstance(ids, (list, tuple, pd.Series)):
+             ids = [ids]
             
         data = []
         for val in ids:
+            cleaned_val = val.decode("utf-8") if isinstance(val, bytes) else str(val)
             data.append({
-                id_column: val,
+                id_column: cleaned_val,
                 'state': state,
                 'update_time': datetime.now()
             })
