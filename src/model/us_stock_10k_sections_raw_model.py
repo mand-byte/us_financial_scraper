@@ -31,6 +31,9 @@ class UsStock10kSectionsRawModel(BaseClickHouseModel):
         "section": {"type": "str"},
         "update_time": {"type": "datetime", "tz": "UTC"},
     }
+    QUERY_GLOBAL_LATEST_FILING_DATE_SQL: ClassVar[str] = (
+        "SELECT max(filing_date) as last_date FROM us_stock_10k_sections_raw"
+    )
 
     @classmethod
     def format_dataframe(cls, df: pd.DataFrame) -> pd.DataFrame:

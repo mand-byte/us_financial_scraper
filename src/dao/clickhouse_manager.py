@@ -4,7 +4,10 @@ import pkgutil
 import importlib
 import pandas as pd
 import threading
+import time
 from src.utils.logger import app_logger
+from clickhouse_connect.driver.exceptions import DatabaseError
+from src.config.settings import settings
 
 # 引入顶层包以供扫描
 import src.model
@@ -12,39 +15,30 @@ from src.model.base_clickhouse_model import BaseClickHouseModel
 from typing import Type
 
 
+class ClickHouseConnectionError(RuntimeError):
+    """Raised when ClickHouse cannot be initialized for scraper runtime."""
+
+
 class ClickHouseManager:
+    _schema_init_lock = threading.Lock()
+    _schema_initialized = False
+
     def __init__(self):
         # 优先读取用户提供的环境变量
-        self.host = os.getenv("CLICKHOST_HOST", "localhost")
-        self.port = int(os.getenv("CLICKHOST_PORT", 8123))
-        self.username = os.getenv("CLICKHOST_USERNAME", "default")
-        self.password = os.getenv("CLICKHOST_PASSWORD", "")
-        self.database = os.getenv("CLICKHOST_DATABASE", "quant_data")
+        self.host = settings.db.clickhouse_host
+        self.port = settings.db.clickhouse_port
+        self.username = settings.db.clickhouse_username
+        self.password = settings.db.clickhouse_password
+        self.database = settings.db.clickhouse_database
+        self.retry_attempts = settings.db.db_operation_retry_attempts
+        self.retry_backoff_seconds = settings.db.db_retry_backoff_seconds
+        self.circuit_open_seconds = settings.db.db_circuit_open_seconds
+        self.write_fail_exit_threshold = settings.db.db_write_fail_exit_threshold
+        self._consecutive_write_failures = 0
+        self._circuit_open_until = 0.0
+        self._state_lock = threading.Lock()
 
-        # 建立连接
-        try:
-            # 首次尝试带数据库名连接
-            self.client: clickhouse_connect.driver.client.Client = (
-                clickhouse_connect.get_client(
-                    host=self.host,
-                    port=self.port,
-                    username=self.username,
-                    password=self.password,
-                    database=self.database,
-                )
-            )
-        except Exception:
-            # 如果数据库不存在，则连默认库并创建
-            self.client: clickhouse_connect.driver.client.Client = (
-                clickhouse_connect.get_client(
-                    host=self.host,
-                    port=self.port,
-                    username=self.username,
-                    password=self.password,
-                )
-            )
-            self.client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
-            self.client.command(f"USE {self.database}")
+        self.client: clickhouse_connect.driver.client.Client = self._build_client()
 
         try:
             # Monkey Patch: 全局自动剔除值为全空的 update_time，交由 CH default now64(3) 计算，避免 None 序列化报错
@@ -52,6 +46,7 @@ class ClickHouseManager:
             original_insert_df = self.client.insert_df
 
             def custom_insert_df(table, df, *args, **kwargs):
+                self._assert_circuit_closed("insert")
                 if df is not None and not df.empty and "update_time" in df.columns:
                     if df["update_time"].isna().all():
                         df = df.drop(columns=["update_time"])
@@ -62,17 +57,120 @@ class ClickHouseManager:
                 if "database" not in kwargs:
                     kwargs["database"] = self.database
 
-                return original_insert_df(table, df, *args, **kwargs)
+                def _do_insert():
+                    return original_insert_df(table, df, *args, **kwargs)
+
+                try:
+                    result = self._with_retry(_do_insert, op_name=f"insert {table}")
+                    self._on_write_success()
+                    return result
+                except Exception as exc:
+                    self._on_write_failure(table, exc)
+                    raise
+
+            original_query_df = self.client.query_df
+
+            def custom_query_df(*args, **kwargs):
+                self._assert_circuit_closed("query")
+
+                def _do_query():
+                    return original_query_df(*args, **kwargs)
+
+                return self._with_retry(_do_query, op_name="query_df")
 
             self.client.insert_df = custom_insert_df
+            self.client.query_df = custom_query_df
 
         except Exception as e:
-            app_logger.error(f"❌ 连接 ClickHouse 失败: {str(e)}")
-            exit(1)  # 连接失败直接退出，避免后续操作报错
+            raise ClickHouseConnectionError(f"连接 ClickHouse 失败: {e}") from e
 
-        # 激活所有模型并建表
-        self._load_all_models()
-        self._init_all_tables()
+        # 激活所有模型并建表（进程内只执行一次）
+        self._initialize_schema_once()
+
+    def _build_client(self) -> clickhouse_connect.driver.client.Client:
+        """Create a db-bound client, and only fallback when database is missing."""
+        try:
+            return clickhouse_connect.get_client(
+                host=self.host,
+                port=self.port,
+                username=self.username,
+                password=self.password,
+                database=self.database,
+            )
+        except DatabaseError as exc:
+            err_text = str(exc).upper()
+            if "UNKNOWN_DATABASE" not in err_text and "CODE: 81" not in err_text:
+                raise ClickHouseConnectionError(f"连接 ClickHouse 失败: {exc}") from exc
+
+            try:
+                bootstrap_client = clickhouse_connect.get_client(
+                    host=self.host,
+                    port=self.port,
+                    username=self.username,
+                    password=self.password,
+                )
+                bootstrap_client.command(
+                    f"CREATE DATABASE IF NOT EXISTS {self.database}"
+                )
+                bootstrap_client.close()
+                return clickhouse_connect.get_client(
+                    host=self.host,
+                    port=self.port,
+                    username=self.username,
+                    password=self.password,
+                    database=self.database,
+                )
+            except Exception as create_exc:
+                raise ClickHouseConnectionError(
+                    f"连接 ClickHouse 或创建数据库失败: {create_exc}"
+                ) from create_exc
+        except Exception as exc:
+            raise ClickHouseConnectionError(f"连接 ClickHouse 失败: {exc}") from exc
+
+    def _with_retry(self, func, op_name: str):
+        last_error = None
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                return func()
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self.retry_attempts:
+                    break
+                app_logger.warning(
+                    f"⚠️ ClickHouse {op_name} 失败，准备重试 {attempt}/{self.retry_attempts - 1}: {exc}"
+                )
+                time.sleep(self.retry_backoff_seconds * attempt)
+        raise ClickHouseConnectionError(
+            f"ClickHouse {op_name} 在 {self.retry_attempts} 次尝试后仍失败: {last_error}"
+        ) from last_error
+
+    def _assert_circuit_closed(self, op_name: str) -> None:
+        with self._state_lock:
+            if time.time() < self._circuit_open_until:
+                raise ClickHouseConnectionError(
+                    f"ClickHouse 熔断中，拒绝执行 {op_name}，恢复时间戳: {self._circuit_open_until:.0f}"
+                )
+
+    def _on_write_success(self) -> None:
+        with self._state_lock:
+            self._consecutive_write_failures = 0
+            self._circuit_open_until = 0.0
+
+    def _on_write_failure(self, table: str, exc: Exception) -> None:
+        with self._state_lock:
+            self._consecutive_write_failures += 1
+            failures = self._consecutive_write_failures
+            self._circuit_open_until = time.time() + self.circuit_open_seconds
+
+        app_logger.error(
+            f"❌ 写入 {table} 失败，连续失败 {failures} 次，已打开熔断 {self.circuit_open_seconds}s: {exc}"
+        )
+
+        if failures >= self.write_fail_exit_threshold:
+            app_logger.error(
+                f"🛑 连续写入失败达到阈值 {self.write_fail_exit_threshold}，进程将退出并等待外部拉起。"
+            )
+            os._exit(2)
 
     def _load_all_models(self):
         """自动扫描 src.model 下所有的模块并导入，触发所有子类的 __init_subclass__ 注册"""
@@ -84,17 +182,41 @@ class ClickHouseManager:
                 except Exception as e:
                     app_logger.warning(f"⚠️ 无法自动加载模型 {module_name}: {e}")
 
+    def _initialize_schema_once(self) -> None:
+        if ClickHouseManager._schema_initialized:
+            return
+
+        with ClickHouseManager._schema_init_lock:
+            if ClickHouseManager._schema_initialized:
+                return
+            self._load_all_models()
+            self._init_all_tables()
+            ClickHouseManager._schema_initialized = True
+
     def _init_all_tables(self):
         """从 BaseClickHouseModel 注册中心全自动化获取并执行 DDL"""
         models = BaseClickHouseModel._registry.values()
+        failed_models: list[str] = []
+        initialized_tables: list[str] = []
 
         for model in models:
             try:
                 ddl = model.get_create_table_sql()
                 self.client.command(ddl)
-                app_logger.info(f"✅ 表 {model.table_name} 自动注册并初始化成功")
+                initialized_tables.append(model.table_name)
+                app_logger.debug(f"✅ 表 {model.table_name} 自动注册并初始化成功")
             except Exception as e:
                 app_logger.error(f"❌ 表 {model.table_name} 初始化失败: {e}")
+                failed_models.append(model.table_name)
+
+        if failed_models:
+            raise ClickHouseConnectionError(
+                f"以下表初始化失败: {', '.join(failed_models)}"
+            )
+
+        app_logger.info(
+            f"✅ ClickHouse Schema 已就绪: 本轮校验/初始化 {len(initialized_tables)} 张表"
+        )
 
     def insert_model_df(self, model_cls: Type[BaseClickHouseModel], df: pd.DataFrame):
         """通用模型写入方法"""

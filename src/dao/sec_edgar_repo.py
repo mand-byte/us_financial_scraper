@@ -5,18 +5,22 @@ SEC EDGAR 专用数据仓库访问层
 处理所有 SEC 表的增删查改逻辑
 """
 
-from typing import Optional, Type
-import pandas as pd
 from datetime import date
+from typing import Optional, Type
 
-from src.utils.logger import app_logger
-from src.dao.clickhouse_manager import ClickHouseManager
+import pandas as pd
+
 from src.model.base_clickhouse_model import BaseClickHouseModel
+from src.model.sec_form345_model import _SecFormBase
+from src.utils.logger import app_logger
 
 
 class SecEdgarRepo:
-    def __init__(self, db_manager: ClickHouseManager):
-        self.db = db_manager
+    @property
+    def db(self):
+        from src.dao.clickhouse_manager import get_db_manager
+
+        return get_db_manager()
 
     def insert_records(
         self, model_cls: Type[BaseClickHouseModel], df: pd.DataFrame
@@ -57,12 +61,8 @@ class SecEdgarRepo:
 
     def get_form345_latest_filing_date(self) -> Optional[date]:
         """获取 Form 3/4/5 表最新 acceptance_datetime 日期"""
-        sql = """
-            SELECT max(acceptance_datetime) as last_date 
-            FROM sec_form345_insider_transactions
-        """
         try:
-            df = self.db.query_dataframe(sql)
+            df = self.db.query_dataframe(_SecFormBase.QUERY_GLOBAL_LATEST_ACCEPTANCE_DATE_SQL)
             if not df.empty and pd.notnull(df.iloc[0]["last_date"]):
                 return pd.to_datetime(df.iloc[0]["last_date"]).date()
             return None
@@ -75,8 +75,7 @@ class SecEdgarRepo:
 
     def get_latest_ts_df_by_cik(self, table_name: str) -> pd.DataFrame:
         """获取按 CIK 分组的最新时间戳"""
-        from src.model.sec_form345_model import _SecFormBase
-        sql = _SecFormBase.QUERY_LATEST_TS_BY_CIK_SQL.format(table_name=table_name)
+        sql = _SecFormBase.build_query_latest_ts_by_cik_sql(table_name=table_name)
         try:
             return self.db.query_dataframe(sql)
         except Exception as e:
@@ -86,12 +85,7 @@ class SecEdgarRepo:
 
     def query_form345_by_figi(self, figi: str, limit: int = 100) -> pd.DataFrame:
         """根据 figi 查询内幕交易记录"""
-        sql = f"""
-            SELECT * FROM sec_form345_insider_transactions
-            WHERE figi = '{figi}'
-            ORDER BY acceptance_datetime DESC
-            LIMIT {limit}
-        """
+        sql = _SecFormBase.build_query_by_figi_sql(figi=figi, limit=limit)
         try:
             return self.db.query_dataframe(sql)
         except Exception as e:
@@ -100,12 +94,10 @@ class SecEdgarRepo:
 
     def query_form345_by_owner(self, owner_name: str, limit: int = 100) -> pd.DataFrame:
         """根据内幕人姓名查询交易记录"""
-        sql = f"""
-            SELECT * FROM sec_form345_insider_transactions
-            WHERE reporting_owner_name = '{owner_name}'
-            ORDER BY acceptance_datetime DESC
-            LIMIT {limit}
-        """
+        sql = _SecFormBase.build_query_by_owner_sql(
+            owner_name=owner_name,
+            limit=limit,
+        )
         try:
             return self.db.query_dataframe(sql)
         except Exception as e:
@@ -114,12 +106,7 @@ class SecEdgarRepo:
 
     def query_form345_by_ticker(self, ticker: str, limit: int = 100) -> pd.DataFrame:
         """根据 ticker 查询内幕交易记录"""
-        sql = f"""
-            SELECT * FROM sec_form345_insider_transactions
-            WHERE issuer_ticker = '{ticker}'
-            ORDER BY acceptance_datetime DESC
-            LIMIT {limit}
-        """
+        sql = _SecFormBase.build_query_by_ticker_sql(ticker=ticker, limit=limit)
         try:
             return self.db.query_dataframe(sql)
         except Exception as e:

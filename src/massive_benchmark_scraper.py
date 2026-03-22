@@ -23,7 +23,7 @@ from src.api.massive_api import MassiveApi
 from src.model.us_benchmark_etf_kline_model import BenchmarkEtfKlineModel
 from src.dao.market_data_repo import MarketDataRepo
 from src.utils.logger import app_logger as logger
-import os
+from src.config.settings import settings
 
 class MassiveBenchmarkScraper:
     NYC = ZoneInfo("America/New_York")
@@ -33,8 +33,8 @@ class MassiveBenchmarkScraper:
         self.massive = MassiveApi()
         self.repo = MarketDataRepo()
         self.scheduler = scheduler
-        self.KLINE_SPAN = int(os.getenv("KLINE_SPAN", 5))
-        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+        self.KLINE_SPAN = settings.scraper.kline_span
+        self.COLD_START_DATE = settings.scraper.scraping_start_date
 
     def start(self):
         if self.scheduler:
@@ -99,5 +99,3 @@ class MassiveBenchmarkScraper:
                 logger.error(f"❌ 同步基准 {ticker} 失败: {e}")
     def stop(self):
         logger.info("🛑 Massive 基准 ETF 搜刮器停止。")
-
-

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+from src.config.settings import settings
 import time
 from typing import List, Dict, Any
 from datetime import datetime, timezone
@@ -8,22 +9,26 @@ import pandas as pd
 from sec_edgar_downloader import Downloader
 
 from src.utils.logger import app_logger
-from src.dao.clickhouse_manager import ClickHouseManager
 from src.dao.sec_edgar_repo import SecEdgarRepo
 from src.dao.market_data_repo import MarketDataRepo
 from src.utils.sec_edgar_parsers.form345_parser import Form345Parser
 
 from src.model.sec_form345_model import SecForm3Model, SecForm4Model, SecForm5Model
 from zoneinfo import ZoneInfo
-SEC_COMPANY_NAME = os.getenv("SEC_DOWNLOADER_COMPANY", "QuantResearch").strip(' "\'“”')
-SEC_EMAIL = os.getenv("SEC_DOWNLOADER_EMAIL", "research@example.com").strip(' "\'“”')
+SEC_COMPANY_NAME = settings.api.sec_downloader_company
+SEC_EMAIL = settings.api.sec_downloader_email
 
 
 class SecEdgarScraper:
     NYC = ZoneInfo("America/New_York")
+    FORM_MODEL_PAIRS = [
+        ("3", SecForm3Model),
+        ("4", SecForm4Model),
+        ("5", SecForm5Model),
+    ]
+
     def __init__(self, scheduler=None):
-        self.db_manager = ClickHouseManager()
-        self.repo = SecEdgarRepo(self.db_manager)
+        self.repo = SecEdgarRepo()
         self.market_repo = MarketDataRepo()
         self.scheduler = scheduler
         self.download_dir = os.path.join(os.path.expanduser("~"), ".sec_edgar_cache")
@@ -80,15 +85,6 @@ class SecEdgarScraper:
 
         return all_rows, self.download_dir
 
-    def sync_form3(self):
-        self._sync_form_base("3", SecForm3Model)
-
-    def sync_form4(self):
-        self._sync_form_base("4", SecForm4Model)
-
-    def sync_form5(self):
-        self._sync_form_base("5", SecForm5Model)
-
     def _sync_form_base(self, form_type: str, model_cls) -> None:
         table_name = model_cls.table_name
         app_logger.info(f"🔍 [Form {form_type}] 启动增量拉取检测...")
@@ -109,7 +105,7 @@ class SecEdgarScraper:
 
         now = datetime.now(timezone.utc)
         # 表里没记录或错误记录 1970 时从配置拉取
-        start_date_env = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+        start_date_env = settings.scraper.scraping_start_date
         cold_start = datetime.strptime(start_date_env, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
         all_rows = []
@@ -157,9 +153,8 @@ class SecEdgarScraper:
 
     def sync_all_forms(self):
         try:
-            self.sync_form3()
-            self.sync_form4()
-            self.sync_form5()
+            for form_type, model_cls in self.FORM_MODEL_PAIRS:
+                self._sync_form_base(form_type, model_cls)
         except Exception as e:
             app_logger.error(f"❌ 批量拉取 SEC Edgar 13F/3/4/5 表单发生异常: {e}")
 

@@ -1,5 +1,6 @@
-import os
+from src.config.settings import settings
 import pandas as pd
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from fredapi import Fred
 
@@ -10,13 +11,11 @@ from src.utils.constants import Fred_Indicator_Code
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 
-
-
 class FredScraper:
     NYC = ZoneInfo("America/New_York")
 
     def __init__(self, scheduler: BlockingScheduler):
-        self.api_key = os.getenv("FRED_API_KEY")
+        self.api_key = settings.api.fred_api_key
         if not self.api_key:
             app_logger.warning("❌ 未设置 FRED_API_KEY，FRED 同步将跳过。")
 
@@ -24,7 +23,7 @@ class FredScraper:
         self.scheduler = scheduler
         self.indicators = Fred_Indicator_Code
         self.repo = MarketDataRepo()
-        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+        self.COLD_START_DATE = settings.scraper.scraping_start_date
 
     def sync_all(self):
         """同步所有 FRED 定义的宏观指标"""
@@ -68,7 +67,7 @@ class FredScraper:
                 if not df.empty:
                     # 格式化并入库
                     clean_df = UsMacroIndicatorsModel.format_dataframe(pd.DataFrame(df))
-                    self.repo.insert_marco_indicators(clean_df)
+                    self.repo.insert_macro_indicators(clean_df)
                     app_logger.info(
                         f"✅ FRED: {internal_code} 同步完成 ({len(clean_df)} 条)。"
                     )
@@ -80,9 +79,6 @@ class FredScraper:
         if not self.fred:
             return
 
-        # 1. 启动时立即运行增量补数
-        self.sync_all()
-
         # 2. 每日 17:15 NYC 执行 (确保当日收盘后的指标已发布)
         self.scheduler.add_job(
             self.sync_all,
@@ -91,10 +87,18 @@ class FredScraper:
             minute=15,
             timezone=self.NYC,
             id="daily_fred_sync",
+            coalesce=True,
+            replace_existing=True,
+            misfire_grace_time=24 * 3600,
+            next_run_time=datetime.now(self.NYC),
+            max_instances=1,
         )
         app_logger.info("✅ FRED 搜刮器激活。")
 
     def stop(self):
         if self.scheduler:
-            self.scheduler.remove_job("daily_fred_sync")
+            try:
+                self.scheduler.remove_job("daily_fred_sync")
+            except Exception:
+                pass
         app_logger.info("🛑 FRED 搜刮器停止。")

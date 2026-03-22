@@ -30,6 +30,12 @@ class UsMacroIndicatorsModel(BaseClickHouseModel):
     )
 
     @classmethod
+    def build_max_published_timestamp_query_sql(cls, target_codes: list[str]) -> str:
+        return cls.MAX_PUBLISHED_TIMESTAMP_QUERY_SQL.format(
+            target_codes=cls.sql_in_clause(target_codes)
+        )
+
+    @classmethod
     def format_dataframe(cls, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return pd.DataFrame()

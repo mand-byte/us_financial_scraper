@@ -2,11 +2,12 @@ import os
 import sys
 from loguru import logger
 from dotenv import load_dotenv
+from src.config.settings import settings
 
 load_dotenv()
 
-CONSOLE_LEVEL = os.getenv("CONSOLE_LOG_LEVEL", "INFO").upper()
-FILE_LEVEL = os.getenv("FILE_LOG_LEVEL", "DEBUG").upper()
+CONSOLE_LEVEL = settings.logging.console_log_level
+FILE_LEVEL = settings.logging.file_log_level
 
 
 def setup_logger():
@@ -36,14 +37,26 @@ def setup_logger():
         enqueue=True,  # 线程安全，多线程环境下保证日志不乱序
     )
 
-    # 4. 添加文件输出
-    # 特性：记录 DEBUG 及以上所有细节，双重切割：按大小(100MB)或按时间(每天00:00)
-    # 自动归档压缩，保留 30 天
-    log_file_path = os.path.join(log_dir, "quant_bot_{time:YYYY-MM-DD}.log")
-
+    # 4. 添加文件输出（常规日志）
+    # 常规日志文件：记录 FILE_LEVEL 及以上（默认 DEBUG）
+    app_log_file = os.path.join(log_dir, "quant_app_{time:YYYY-MM-DD}.log")
     logger.add(
-        log_file_path,
+        app_log_file,
         level=FILE_LEVEL,
+        filter=lambda record: record["level"].name not in {"ERROR", "CRITICAL"},
+        rotation="00:00",
+        retention="30 days",
+        compression="zip",
+        encoding="utf-8",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        enqueue=True,
+    )
+
+    # 5. 添加文件输出（错误日志）
+    error_log_file = os.path.join(log_dir, "quant_error_{time:YYYY-MM-DD}.log")
+    logger.add(
+        error_log_file,
+        level="ERROR",
         rotation="00:00",
         retention="30 days",
         compression="zip",

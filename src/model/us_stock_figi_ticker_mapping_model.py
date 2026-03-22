@@ -31,6 +31,28 @@ class UsStockFigiTickerMappingModel(BaseClickHouseModel):
     QUERY_MAPPINGS_HISTORY_BY_TICKERS_SQL: ClassVar[str] = (
         "SELECT composite_figi, ticker, date FROM us_stock_figi_ticker_mapping WHERE ticker IN ({tickers_str})"
     )
+    QUERY_ROW_COUNT_SQL: ClassVar[str] = (
+        "SELECT count() AS row_count FROM us_stock_figi_ticker_mapping"
+    )
+
+    @classmethod
+    def build_query_mapping_by_figi_sql(cls, figi: str) -> str:
+        return (
+            "SELECT * FROM us_stock_figi_ticker_mapping "
+            f"WHERE composite_figi = {cls.sql_literal(figi)}"
+        )
+
+    @classmethod
+    def build_query_mapping_by_tickers_sql(cls, tickers: list[str]) -> str:
+        return cls.QUERY_MAPPING_BY_TICKERS_SQL.format(
+            tickers_str=cls.sql_in_clause(tickers)
+        )
+
+    @classmethod
+    def build_query_mappings_history_by_tickers_sql(cls, tickers: list[str]) -> str:
+        return cls.QUERY_MAPPINGS_HISTORY_BY_TICKERS_SQL.format(
+            tickers_str=cls.sql_in_clause(tickers)
+        )
 
     @classmethod
     def format_dataframe(cls, df: pd.DataFrame) -> pd.DataFrame:

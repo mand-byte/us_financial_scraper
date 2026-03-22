@@ -13,7 +13,7 @@ from src.model.us_macro_daily_kline_model import UsMacroDailyKlineModel
 from apscheduler.schedulers.blocking import BlockingScheduler
 from src.utils.logger import app_logger
 from src.dao import MarketDataRepo
-import os
+from src.config.settings import settings
 from src.utils.constants import CBOE_Indicator_Code
 
 # Assuming build_vx_continuous is defined in another util (e.g. cboe_scraping helper),
@@ -29,7 +29,7 @@ class CboeScraper:
         self.mapping = CBOE_Indicator_Code  # {'VX1': 'VX1', 'VX2': 'VX2'}
         self.scheduler = scheduler
         self.repo = MarketDataRepo()
-        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+        self.COLD_START_DATE = settings.scraper.scraping_start_date
 
     def start(self):
         app_logger.info("✅ CBOE VIX 指数与期货搜刮器已激活。")

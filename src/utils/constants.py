@@ -5,7 +5,8 @@
 
 Fred_Indicator_Code = {
     # --- 1. 流动性与利率 (核心定价) ---
-    'DFF': 'FED_RATE_DECISION',         # 有效联邦基金利率 (日)
+    # 与 ForexFactory 的离散事件 "Federal Funds Rate" 解耦，避免同码混源
+    'DFF': 'FED_FUNDS_EFFECTIVE_RATE',  # 有效联邦基金利率 (日)
     'T10Y2Y': 'YIELD_CURVE_SPREAD',     # 期限利差: 衰退预警 (日)
     
     # --- 2. 货币供应 (新增) ---
@@ -69,4 +70,3 @@ ForexFactory_Indicator_Title_Map = {
     'ADP Non-Farm Employment Change': 'US_ADP_NFP',
     'CB Consumer Confidence': 'US_CONS_CONFIDENCE',
 }
-

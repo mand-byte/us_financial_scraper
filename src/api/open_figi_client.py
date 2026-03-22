@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 from typing import List, Dict, Optional
 from src.utils.logger import app_logger
-import os
+from src.config.settings import settings
 
 
 class OpenFIGIClient:
@@ -15,7 +15,7 @@ class OpenFIGIClient:
     URL = "https://api.openfigi.com/v3/mapping"
 
     def __init__(self):
-        self.api_key = os.getenv("OPENFIGI_API_KEY", None)
+        self.api_key = settings.api.openfigi_api_key
         # 有 Key: 每6秒25次请求，没 Key: 每分钟25次
         self.wait_time = 6.1 / 25 if self.api_key else 60.1 / 25
         self.batch_size = (

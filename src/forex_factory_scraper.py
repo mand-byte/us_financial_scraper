@@ -1,5 +1,5 @@
 import time
-import os
+from src.config.settings import settings
 import pandas as pd
 from zoneinfo import ZoneInfo
 from datetime import datetime
@@ -19,13 +19,20 @@ class ForexFactoryScraper:
         self.indicators_map = ForexFactory_Indicator_Title_Map
         self.scheduler = scheduler
         self.repo = MarketDataRepo()
-        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+        self.COLD_START_DATE = settings.scraper.scraping_start_date
 
     def _clean_value(self, val_str):
         """清洗数值字符串 (如 <0.25%, 2.5%, 450K, 1.2M -> 0.25, 2.5, 450000, 1200000)"""
         if not val_str or str(val_str).strip() == "":
             return None
-        clean_val = str(val_str).replace("%", "").replace(",", "").replace("<", "").replace(">", "").strip()
+        clean_val = (
+            str(val_str)
+            .replace("%", "")
+            .replace(",", "")
+            .replace("<", "")
+            .replace(">", "")
+            .strip()
+        )
         try:
             if clean_val.endswith("K"):
                 return float(clean_val[:-1]) * 1000
@@ -49,11 +56,14 @@ class ForexFactoryScraper:
             actual_val = self._clean_value(row["Actual"])
             forecast_val = self._clean_value(row["Forecast"])
             title = str(row["Title"]).strip() if row.get("Title") else None
-            
+
             if not title or title not in self.indicators_map:
                 continue
-            
-            
+            if actual_val is None:
+                continue
+            if forecast_val is None:
+                forecast_val = actual_val
+
             processed_list.append(
                 {
                     "publish_timestamp": row["DateTime"],
@@ -87,14 +97,17 @@ class ForexFactoryScraper:
             app_logger.info(f"📅 ForexFactory: 正在补齐月份: {year}-{month_label}")
 
             try:
-                df_raw = scrape_month(month_label, year)
-                
-                if not df_raw.empty:
-                    df_processed = self.process_scraped_data(df_raw)
-                    if not df_processed.empty:
-                        # Model -> DF -> Repo
-                        clean_df = UsMacroIndicatorsModel.format_dataframe(df_processed)
-                        self.repo.insert_marco_indicators(clean_df)
+                    df_raw = scrape_month(month_label, year)
+
+                    if not df_raw.empty:
+                        df_processed = self.process_scraped_data(df_raw)
+                        if not df_processed.empty:
+                            # Model -> DF -> Repo
+                            clean_df = UsMacroIndicatorsModel.format_dataframe(df_processed)
+                            self.repo.insert_macro_indicators(clean_df)
+                            app_logger.info(
+                                f"✅ ForexFactory: {year}-{month_label} 入库 {len(clean_df)} 行"
+                            )
             except Exception as e:
                 app_logger.error(f"抓取 {year}-{month_label} 失败: {e}")
 
@@ -108,8 +121,16 @@ class ForexFactoryScraper:
     def start(self):
         app_logger.info("✅ ForexFactory 宏观日历搜刮器激活。")
 
-        # 1. 启动时补齐历史
-        self.sync_history()
+        # 1. 启动时先触发一次补数（独立任务 ID，避免与日常任务混淆）
+        self.scheduler.add_job(
+            self.sync_history,
+            id="initial_forexfactory_sync",
+            next_run_time=datetime.now(self.NYC),
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+            misfire_grace_time=24 * 3600,
+        )
 
         # 2. 每日 21:00 NYC 更新当月最新数值
         self.scheduler.add_job(
@@ -119,9 +140,20 @@ class ForexFactoryScraper:
             minute=0,
             timezone=self.NYC,
             id="daily_forexfactory_sync",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+            misfire_grace_time=24 * 3600,
         )
 
     def stop(self):
         if self.scheduler:
-            self.scheduler.remove_job("daily_forexfactory_sync")
+            try:
+                self.scheduler.remove_job("daily_forexfactory_sync")
+            except Exception:
+                pass
+            try:
+                self.scheduler.remove_job("initial_forexfactory_sync")
+            except Exception:
+                pass
         app_logger.info("🛑 ForexFactory 搜刮器停止。")

@@ -67,6 +67,15 @@ class UsStockUniverseModel(BaseClickHouseModel):
     )
 
     @classmethod
+    def build_query_sync_tasks_sql(cls, state_table: str, id_column: str) -> str:
+        safe_state_table = cls.sql_identifier(state_table)
+        safe_id_column = cls.sql_identifier(id_column)
+        return cls.QUERY_SYNC_TASKS_SQL.format(
+            state_table=safe_state_table,
+            id_column=safe_id_column,
+        )
+
+    @classmethod
     def format_dataframe(cls, df: pd.DataFrame) -> pd.DataFrame:
         """格式化与数据对齐"""
         if df is None or df.empty:

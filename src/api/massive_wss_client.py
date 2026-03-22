@@ -1,19 +1,23 @@
-
-import os
 import json
 import asyncio
 import websockets
 import inspect
 from typing import Callable, List
 from src.utils.logger import app_logger
+from src.config.settings import settings
+
+
 class MassiveWssClient:
     def __init__(self, on_message_callback: Callable[[list], None]):
         """
         :param on_message_callback: 外部传入的回调函数，用于把清洗好的数据写进 ClickHouse
         """
-        self.api_key = os.getenv("MASSIVE_API_KEY", "")
-        delay = os.getenv("MASSIVE_DELAY", "true").lower()
-        self.wss_url = "wss://delayed.massive.com/stocks" if delay == "true" else "wss://socket.massive.com/stocks"
+        self.api_key = settings.api.massive_api_key
+        self.wss_url = (
+            "wss://delayed.massive.com/stocks"
+            if settings.api.massive_delay
+            else "wss://socket.massive.com/stocks"
+        )
         websockets.ClientConnection
         self.on_message_callback = on_message_callback
         self.ws_connection = None

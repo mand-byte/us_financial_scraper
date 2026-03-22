@@ -44,6 +44,13 @@ class BenchmarkEtfKlineModel(BaseClickHouseModel):
     QUERY_LATEST_TS_BY_TICKER_SQL: ClassVar[str] = "SELECT max(timestamp) as last_ts FROM us_benchmark_etf_klines WHERE ticker = '{ticker}'"
 
     @classmethod
+    def build_query_latest_ts_by_ticker_sql(cls, ticker: str) -> str:
+        return (
+            "SELECT max(timestamp) as last_ts FROM us_benchmark_etf_klines "
+            f"WHERE ticker = {cls.sql_literal(ticker)}"
+        )
+
+    @classmethod
     def format_dataframe(cls, df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         if df is None or df.empty:
             return pd.DataFrame()

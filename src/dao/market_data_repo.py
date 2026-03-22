@@ -1,63 +1,67 @@
 # -*- coding: utf-8 -*-
 
 
-import pandas as pd
-from src.utils.logger import app_logger
-import os
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from typing import Optional
+
+import pandas as pd
+from zoneinfo import ZoneInfo
+
+from src.utils.logger import app_logger
 
 
 class MarketDataRepo:
-    SCRAPING_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
     @property
     def db(self):
         from src.dao.clickhouse_manager import get_db_manager
         return get_db_manager()
 
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
-    def insert_stock_universe(self, df: pd.DataFrame):
+    def _query_df(
+        self,
+        query: str,
+        error_message: str,
+        *,
+        empty_fallback: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        try:
+            return self.db.client.query_df(query)
+        except Exception as exc:
+            app_logger.error(f"{error_message}: {exc}")
+            return pd.DataFrame() if empty_fallback is None else empty_fallback
+
+    def insert_stock_universe(self, df: pd.DataFrame) -> None:
         try:
             self.db.client.insert_df("us_stock_universe", df)
         except Exception as e:
             app_logger.error(f"插入股票列表数据失败: {e}")
-            raise e
+            raise
 
     def get_active_tickers(self) -> pd.DataFrame:
         from src.model.us_stock_universe_model import UsStockUniverseModel
 
-        query = UsStockUniverseModel.QUERY_ACTIVE_TICKERS_SQL
-        try:
-            res = self.db.client.query_df(query)
-            return res
-        except Exception as e:
-            app_logger.error(f"查询活跃股票列表失败: {e}")
-            return pd.DataFrame()
+        return self._query_df(
+            UsStockUniverseModel.QUERY_ACTIVE_TICKERS_SQL,
+            "查询活跃股票列表失败",
+        )
 
     def get_delisted_tickers(self) -> pd.DataFrame:
         from src.model.us_stock_universe_model import UsStockUniverseModel
 
-        query = UsStockUniverseModel.QUERY_DELISTED_TICKERS_SQL
-        try:
-            res = self.db.client.query_df(query)
-            return res
-        except Exception as e:
-            app_logger.error(f"查询退市股票列表失败: {e}")
-            return pd.DataFrame()
+        return self._query_df(
+            UsStockUniverseModel.QUERY_DELISTED_TICKERS_SQL,
+            "查询退市股票列表失败",
+        )
 
     def get_universe_tickers(self) -> pd.DataFrame:
         from src.model.us_stock_universe_model import UsStockUniverseModel
 
-        query = UsStockUniverseModel.QUERY_ALL_TICKERS_SQL
-        try:
-            res = self.db.client.query_df(query)
-            return res
-        except Exception as e:
-            app_logger.error(f"查询股票列表失败: {e}")
-            return pd.DataFrame()
+        return self._query_df(
+            UsStockUniverseModel.QUERY_ALL_TICKERS_SQL,
+            "查询股票列表失败",
+        )
 
     def get_sync_tasks(
         self, table_name: str, id_column: str = "composite_figi"
@@ -70,116 +74,119 @@ class MarketDataRepo:
         state_table = f"{table_name}_state"
         from src.model.us_stock_universe_model import UsStockUniverseModel
 
-        query = UsStockUniverseModel.QUERY_SYNC_TASKS_SQL.format(
-            state_table=state_table, id_column=id_column
+        query = UsStockUniverseModel.build_query_sync_tasks_sql(
+            state_table=state_table,
+            id_column=id_column,
         )
-        try:
-            return self.db.client.query_df(query)
-        except Exception as e:
-            app_logger.error(f"Query sync tasks failed for {table_name}: {e}")
-            return pd.DataFrame()
+        return self._query_df(
+            query,
+            f"Query sync tasks failed for {table_name}",
+        )
 
-    def insert_stock_minutes_klines(self, df: pd.DataFrame):
+    def insert_stock_minutes_klines(self, df: pd.DataFrame) -> None:
         try:
             self.db.client.insert_df("us_minutes_klines", df)
         except Exception as e:
             app_logger.error(f"插入分钟K线数据失败: {e}")
-            raise e
+            raise
 
     def get_all_stocks_latest_ts_df_by_group(self) -> pd.DataFrame:
         from src.model.us_stock_minutes_kline_model import UsStockMinutesKlineModel
 
         query = UsStockMinutesKlineModel.QUERY_LATEST_TS_BY_GROUP_SQL
-        try:
-            latest_ts_df = self.db.client.query_df(query)
-            return latest_ts_df
-        except Exception:
-            return pd.DataFrame()
+        return self._query_df(
+            query,
+            "查询分钟K线最新分组时间失败",
+        )
 
-    def insert_us_stock_figi_ticker_mapping(self, df: pd.DataFrame):
+    def insert_us_stock_figi_ticker_mapping(self, df: pd.DataFrame) -> None:
         try:
             self.db.client.insert_df("us_stock_figi_ticker_mapping", df)
         except Exception as e:
             app_logger.error(f"插入figi ticker 映射表失败: {e}")
-            raise e
+            raise
 
-    def get_us_stock_figi_ticker_mapping(self, figi) -> pd.DataFrame:
-        from src.model.us_stock_figi_ticker_mapping_model import UsStockFigiTickerMappingModel
-        query = UsStockFigiTickerMappingModel.QUERY_MAPPING_BY_FIGI_SQL.format(
+    def get_us_stock_figi_ticker_mapping(self, figi: str) -> pd.DataFrame:
+        from src.model.us_stock_figi_ticker_mapping_model import (
+            UsStockFigiTickerMappingModel,
+        )
+
+        query = UsStockFigiTickerMappingModel.build_query_mapping_by_figi_sql(
             figi=figi
         )
-        try:
-            res = self.db.client.query_df(query)
-            return res
-        except Exception as e:
-            app_logger.error(f"查询股票列表数据失败: {e}")
-            return pd.DataFrame()
+        return self._query_df(
+            query,
+            "查询股票列表数据失败",
+        )
 
     def get_cik_to_figi_mapping(self) -> dict:
         """获取 CIK -> FIGI 映射 (用于 enrichment)"""
         from src.model.us_stock_universe_model import UsStockUniverseModel
-        sql = UsStockUniverseModel.QUERY_CIK_TO_FIGI_MAPPING_SQL
-        try:
-            df = self.db.client.query_df(sql)
-            return dict(zip(df["cik"].astype(str), df["composite_figi"].astype(str)))
-        except Exception as e:
-            app_logger.warning(f"⚠️ 获取 CIK->FIGI 映射失败: {e}")
+        df = self._query_df(
+            UsStockUniverseModel.QUERY_CIK_TO_FIGI_MAPPING_SQL,
+            "获取 CIK->FIGI 映射失败",
+        )
+        if df.empty:
             return {}
+        return dict(zip(df["cik"].astype(str), df["composite_figi"].astype(str)))
 
     def get_figi_mapping_by_tickers(self, tickers: list[str]) -> dict:
         if not tickers:
             return {}
-        from src.model.us_stock_figi_ticker_mapping_model import UsStockFigiTickerMappingModel
-        
-        tickers_str = "','".join(tickers)
-        query = UsStockFigiTickerMappingModel.QUERY_MAPPING_BY_TICKERS_SQL.format(
-            tickers_str=f"'{tickers_str}'"
+        from src.model.us_stock_figi_ticker_mapping_model import (
+            UsStockFigiTickerMappingModel,
         )
-        try:
-            res = self.db.client.query_df(query)
-            if res.empty:
-                return {}
-            # 返回 ticker 到 composite_figi 的字典映射
-            return dict(zip(res["ticker"], res["composite_figi"]))
-        except Exception as e:
-            app_logger.error(f"查询 tickers 映射失败: {e}")
+
+        query = UsStockFigiTickerMappingModel.build_query_mapping_by_tickers_sql(
+            tickers=tickers
+        )
+        res = self._query_df(query, "查询 tickers 映射失败")
+        if res.empty:
             return {}
+        return dict(zip(res["ticker"], res["composite_figi"]))
 
     def get_figi_mapping_history_by_tickers(self, tickers: list[str]) -> pd.DataFrame:
         if not tickers:
             return pd.DataFrame()
-        from src.model.us_stock_figi_ticker_mapping_model import UsStockFigiTickerMappingModel
-        
-        tickers_str = "','".join(tickers)
-        query = UsStockFigiTickerMappingModel.QUERY_MAPPINGS_HISTORY_BY_TICKERS_SQL.format(
-            tickers_str=f"'{tickers_str}'"
+        from src.model.us_stock_figi_ticker_mapping_model import (
+            UsStockFigiTickerMappingModel,
         )
-        try:
-            res = self.db.client.query_df(query)
-            return res
-        except Exception as e:
-            app_logger.error(f"查询 tickers 历史映射失败: {e}")
-            return pd.DataFrame()
+
+        query = (
+            UsStockFigiTickerMappingModel.build_query_mappings_history_by_tickers_sql(
+                tickers=tickers
+            )
+        )
+        return self._query_df(
+            query,
+            "查询 tickers 历史映射失败",
+        )
 
     def is_mapping_table_empty(self) -> bool:
         """检查 mapping 表是否为空"""
-        try:
-            res = self.db.client.command("SELECT count() FROM us_stock_figi_ticker_mapping")
-            return int(res) == 0
-        except Exception:
-            return True
+        from src.model.us_stock_figi_ticker_mapping_model import (
+            UsStockFigiTickerMappingModel,
+        )
 
-    def insert_benchmark_etf_klines(self, df: pd.DataFrame):
+        result = self._query_df(
+            UsStockFigiTickerMappingModel.QUERY_ROW_COUNT_SQL,
+            "查询 mapping 表行数失败",
+        )
+        if result.empty:
+            return True
+        return int(result.iloc[0]["row_count"]) == 0
+
+    def insert_benchmark_etf_klines(self, df: pd.DataFrame) -> None:
         try:
             self.db.client.insert_df("us_benchmark_etf_klines", df)
         except Exception as e:
             app_logger.error(f"插入基准ETF K线数据失败: {e}")
-            raise e
+            raise
 
     def get_latest_benchmark_etf_klines(self, ticker: str) -> Optional[datetime]:
         from src.model.us_benchmark_etf_kline_model import BenchmarkEtfKlineModel
 
-        query = BenchmarkEtfKlineModel.QUERY_LATEST_TS_BY_TICKER_SQL.format(
+        query = BenchmarkEtfKlineModel.build_query_latest_ts_by_ticker_sql(
             ticker=ticker
         )
         try:
@@ -195,7 +202,7 @@ class MarketDataRepo:
             app_logger.error(f"查询最新基准ETF K线时间戳失败: {e}")
             return None
 
-    def insert_macro_daily_klines(self, df: pd.DataFrame):
+    def insert_macro_daily_klines(self, df: pd.DataFrame) -> None:
         # 此时传进来的 df 已经是被 Model 洗干净的了
         self.db.client.insert_df("us_macro_daily_klines", df)
 
@@ -215,12 +222,10 @@ class MarketDataRepo:
             app_logger.error(f"symbols 参数非法: {symbols}")
             return None
 
-        symbols_str = "'" + "','".join(target_symbols) + "'"
-
         from src.model.us_macro_daily_kline_model import UsMacroDailyKlineModel
 
-        query = UsMacroDailyKlineModel.MAX_TRADE_DATE_QUERY_SQL.format(
-            symbols_str=symbols_str
+        query = UsMacroDailyKlineModel.build_max_trade_date_query_sql(
+            symbols=target_symbols
         )
 
         try:
@@ -248,7 +253,7 @@ class MarketDataRepo:
         identifier: str,
         id_column: str = "composite_figi",
         state: int = 1,
-    ):
+    ) -> None:
         """
         Update completion state for a specific table.
         Model -> DF -> Repo pattern.
@@ -268,8 +273,12 @@ class MarketDataRepo:
                 f"Update sync status failed for {table_name} [{identifier}]: {e}"
             )
 
-    def insert_marco_indicators(self, df: pd.DataFrame):
+    def insert_macro_indicators(self, df: pd.DataFrame) -> None:
         self.db.client.insert_df("us_macro_indicators", df)
+
+    # 兼容历史拼写，避免影响现有调用方。
+    def insert_marco_indicators(self, df: pd.DataFrame) -> None:
+        self.insert_macro_indicators(df)
 
     def get_latest_macro_indicators(
         self, indicator_code: list | dict | str
@@ -286,11 +295,10 @@ class MarketDataRepo:
         if not target_codes:
             app_logger.error(f"indicator_code 参数非法: {indicator_code}")
             return None
-        target_codes_str = "'" + "','".join(target_codes) + "'"
         from src.model.us_macro_indicators_model import UsMacroIndicatorsModel
 
-        query = UsMacroIndicatorsModel.MAX_PUBLISHED_TIMESTAMP_QUERY_SQL.format(
-            target_codes=target_codes_str
+        query = UsMacroIndicatorsModel.build_max_published_timestamp_query_sql(
+            target_codes=target_codes
         )
         try:
             res = self.db.client.query_df(query)

@@ -3,7 +3,6 @@ import numpy as np
 import requests
 import zipfile
 import io
-import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from src.dao import SentimentRepo
@@ -177,18 +176,16 @@ class GDELTScraper:
         except Exception as e:
             app_logger.error(f"❌ GDELT 获取列表失败: {str(e)}")
 
-    def _checking_data_complementation(self):
-        self.sync_v2_incremental()
-
     def _main_loop(self):
         app_logger.info("🛡️ GDELT 2.0 聚合搜刮子线程启动。")
-        self._checking_data_complementation()
         self.scheduler.add_job(
             self.sync_v2_incremental,
             "cron",
             minute="*/15",
             id="15min_gdelt_scraping",
             coalesce=True,
+            replace_existing=True,
+            next_run_time=datetime.now(ZoneInfo("UTC")),
         )
 
     def start(self):

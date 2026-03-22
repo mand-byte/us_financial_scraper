@@ -1,4 +1,3 @@
-import os
 import requests
 import pandas as pd
 from typing import Optional, Callable, List
@@ -6,12 +5,13 @@ from src.utils.logger import app_logger
 import asyncio
 from .massive_wss_client import MassiveWssClient
 import threading
+from src.config.settings import settings
 
 
 # 在数据清晰中，要考虑一个cik应对多个ticker的情况，比如google和Berkshire Hathaway
 class MassiveApi:
     def __init__(self):
-        self.api_key = os.getenv("MASSIVE_API_KEY", "")
+        self.api_key = settings.api.massive_api_key
         self.base_url = "https://api.massive.com"
         self.headers = {"Authorization": f"Bearer {self.api_key}"}
 
@@ -48,7 +48,7 @@ class MassiveApi:
 
         except requests.RequestException as e:
             app_logger.error(f"请求 Massive API 失败: {e}")
-            raise e
+            raise
 
     # 这个逻辑要改，活跃的股票不止1000条。
     def get_all_tickers(
@@ -60,8 +60,8 @@ class MassiveApi:
         market: str = "stocks",
         active: Optional[bool] = None,
         order: str = "asc",
-        limit: int = 1000
-    ) -> pd.DataFrame:
+        limit: int = 1000,
+    ) -> Optional[pd.DataFrame]:
         """
         :param active: active of the ticker, default is True (API default)
         :param max_pages: maximum pages to fetch
@@ -73,7 +73,7 @@ class MassiveApi:
         }
         if type_name:
             raw_params["type"] = type_name
-        
+
         if active is not None:
             raw_params["active"] = "true" if active else "false"
         if ticker_filter_type is not None:
@@ -102,7 +102,7 @@ class MassiveApi:
         limit: int = 50000,
         adjusted: bool = False,
         sort: str = "asc",
-    ):
+    ) -> Optional[pd.DataFrame]:
 
         endpoint = (
             f"/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{start}/{end}"
@@ -144,7 +144,7 @@ class MassiveApi:
         order: str = "asc",
         # 官方支持最大1000
         limit: int = 1000,
-    ):
+    ) -> Optional[pd.DataFrame]:
         """🌟 内存防御：改为生成器模式，逐页产出新闻
         ticker: Specify a case-sensitive ticker symbol. For example, AAPL represents Apple Inc.
         published_utc_type: The type of published_utc filter. Possible values include: published_utc, published_utc.gte, published_utc.gt, published_utc.lte, published_utc.lt.
@@ -164,7 +164,7 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, clean_params)
             result_raw = []
-            
+
             results = data_.get("results", [])
             result_raw.extend(results)
             return pd.DataFrame(result_raw)
@@ -173,7 +173,7 @@ class MassiveApi:
             return None
 
     # 此接口基本只有改名事件
-    def get_ticker_events(self, id: str):
+    def get_ticker_events(self, id: str) -> Optional[dict]:
         """
         id: The ticker symbol or composite FIGI of the company or CUSIP 优先使用 ticker其次cik.
         {"name":"Apple Inc.","composite_figi":"BBG000B9XRY4","cik":"0000320193","events":[{"ticker_change":{"ticker":"AAPL"},"type":"ticker_change","date":"2003-09-10"}]}
@@ -188,8 +188,6 @@ class MassiveApi:
             app_logger.error(f"抓取ticker 改名 事件失败  [id: {id}]: {e}")
             return None
 
-
-
     # 获取拆合记录
     def get_splits(
         self,
@@ -197,7 +195,7 @@ class MassiveApi:
         execution_date: str = "1978-10-25",
         limit: int = 5000,
         sort: str = "execution_date.asc",
-    ):
+    ) -> Optional[pd.DataFrame]:
         endpoint = "/stocks/v1/splits"
         params = {
             "execution_date.gte": execution_date,
@@ -209,9 +207,9 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, params)
             result_raw = []
-            
+
             result_raw.extend(data_.get("results", []))
-                
+
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(
@@ -221,7 +219,7 @@ class MassiveApi:
 
     def get_dividends(
         self, ex_dividend_date: str = "2000-01-15", limit: int = 5000
-    ) -> pd.DataFrame:
+    ) -> Optional[pd.DataFrame]:
         endpoint = "/stocks/v1/dividends"
         params = {
             "ex_dividend_date.gte": ex_dividend_date,
@@ -231,9 +229,9 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, params)
             result_raw = []
-            
+
             result_raw.extend(data_.get("results", []))
-                
+
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(
@@ -246,7 +244,7 @@ class MassiveApi:
         period_end_gte: str = "2000-01-01",
         limit: int = 1000,
         sort: str = "period_end.asc",
-    ) -> pd.DataFrame:
+    ) -> Optional[pd.DataFrame]:
         """
         Plain-text content of specific sections from SEC filings. Currently supports the Risk Factors and
         Business sections, providing clean, structured text extracted directly from the filing.
@@ -260,13 +258,13 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, params)
             result_raw = []
-            
+
             result_raw.extend(data_.get("results", []))
 
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(
-                f"抓取 10-K sections 数据失败 [period_end: {period_end}]: {e}"
+                f"抓取 10-K sections 数据失败 [period_end_gte: {period_end_gte}]: {e}"
             )
             return None
 
@@ -275,7 +273,7 @@ class MassiveApi:
         filing_date_gte: str = "2000-01-01",
         limit: int = 1000,
         sort: str = "filing_date.asc",
-    ) -> pd.DataFrame:
+    ) -> Optional[pd.DataFrame]:
         """
         Standardized, machine-readable risk factor disclosures from SEC filings.
         filing_date_gte: Search filing_date for values that are greater than or equal to the given value.
@@ -289,7 +287,7 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, params)
             result_raw = []
-            
+
             result_raw.extend(data_.get("results", []))
 
             return pd.DataFrame(result_raw)
@@ -301,7 +299,7 @@ class MassiveApi:
 
     def get_risk_taxonomy(
         self, limit: int = 999, sort: str = "taxonomy.desc"
-    ) -> pd.DataFrame:
+    ) -> Optional[pd.DataFrame]:
         """
         Retrieve the taxonomy for risk factors, providing descriptions for each category.
         """
@@ -313,7 +311,7 @@ class MassiveApi:
         try:
             data_ = self.request("GET", endpoint, params)
             result_raw = []
-            
+
             result_raw.extend(data_.get("results", []))
 
             return pd.DataFrame(result_raw)

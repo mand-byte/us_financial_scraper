@@ -45,6 +45,14 @@ class UsStockDividendsModel(BaseClickHouseModel):
     QUERY_GLOBAL_LATEST_EX_DATE_SQL: ClassVar[str] = "SELECT max(ex_dividend_date) as last_date FROM us_stock_dividends"
 
     @classmethod
+    def build_query_latest_ex_date_by_figi_sql(cls, composite_figi: str) -> str:
+        return (
+            "SELECT max(ex_dividend_date) as last_date "
+            "FROM us_stock_dividends "
+            f"WHERE composite_figi = {cls.sql_literal(composite_figi)}"
+        )
+
+    @classmethod
     def format_dataframe(cls, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return pd.DataFrame()

@@ -1,179 +1,182 @@
 # -*- coding: utf-8 -*-
-# 负责 表3,4,5,8,9 ,10(基本面,资金,个股新闻)
-from src.utils.logger import app_logger
+# 负责基本面、风险因子、新闻原文等数据的入库与查询。
+from datetime import date, datetime
+from typing import Optional
+
 import pandas as pd
-from datetime import datetime, date
-import os
-from zoneinfo import ZoneInfo
+
 from src.model import UsStockNewsRawModel
+from src.utils.logger import app_logger
 
 
 class FundamentalRepo:
     @property
     def db(self):
         from src.dao.clickhouse_manager import get_db_manager
+
         return get_db_manager()
 
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
+    @staticmethod
+    def _extract_valid_date(df: pd.DataFrame, column: str = "last_date") -> Optional[date]:
+        if df.empty or column not in df.columns:
+            return None
+        value = df.iloc[0][column]
+        if pd.isna(value):
+            return None
+        dt = pd.to_datetime(value, errors="coerce")
+        if pd.isna(dt) or dt.year <= 1970:
+            return None
+        return dt.date()
 
+    @staticmethod
+    def _extract_valid_datetime(
+        df: pd.DataFrame, column: str = "last_ts"
+    ) -> Optional[datetime]:
+        if df.empty or column not in df.columns:
+            return None
+        value = df.iloc[0][column]
+        if pd.isna(value):
+            return None
+        dt = pd.to_datetime(value, errors="coerce")
+        if pd.isna(dt) or dt.year <= 1970:
+            return None
+        return dt.to_pydatetime()
 
-    def insert_stock_dividends(self, df: pd.DataFrame):
+    def insert_stock_dividends(self, df: pd.DataFrame) -> None:
         try:
             self.db.client.insert_df("us_stock_dividends", df)
         except Exception as e:
             app_logger.error(f"插入 us_stock_dividends 失败: {e}")
-            raise e
+            raise
 
-    def get_latest_stock_dividends_date(self, composite_figi: str) -> date:
+    def get_latest_stock_dividends_date(self, composite_figi: str) -> Optional[date]:
         from src.model.us_stock_dividends_model import UsStockDividendsModel
 
-        query = UsStockDividendsModel.QUERY_LATEST_EX_DATE_BY_FIGI_SQL.format(
+        query = UsStockDividendsModel.build_query_latest_ex_date_by_figi_sql(
             composite_figi=composite_figi
         )
         try:
-            res = self.db.client.query_df(query)
-            last_date = res.iloc[0]["last_date"]
-            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
-                return pd.to_datetime(last_date).date()
-            return None
-        except Exception:
+            return self._extract_valid_date(self.db.client.query_df(query))
+        except Exception as e:
+            app_logger.error(f"查询 {composite_figi} 最新派息时间失败: {e}")
             return None
 
-    def insert_stock_splits(self, df: pd.DataFrame):
+    def insert_stock_splits(self, df: pd.DataFrame) -> None:
         try:
             self.db.client.insert_df("us_stock_splits", df)
         except Exception as e:
             app_logger.error(f"插入 us_stock_splits 失败: {e}")
-            raise e
+            raise
 
-    def get_latest_stock_splits_date(self, composite_figi: str) -> date:
+    def get_latest_stock_splits_date(self, composite_figi: str) -> Optional[date]:
         from src.model.us_stock_splits_model import UsStockSplitsModel
 
-        query = UsStockSplitsModel.QUERY_LATEST_EX_DATE_BY_FIGI_SQL.format(
+        query = UsStockSplitsModel.build_query_latest_execution_date_by_figi_sql(
             composite_figi=composite_figi
         )
         try:
-            res = self.db.client.query_df(query)
-            last_date = res.iloc[0]["last_date"]
-            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
-                return pd.to_datetime(last_date).date()
-            return None
+            return self._extract_valid_date(self.db.client.query_df(query))
         except Exception as e:
-            app_logger.error(f"查询{composite_figi}最新股票拆分时间失败: {e}")
+            app_logger.error(f"查询 {composite_figi} 最新股票拆分时间失败: {e}")
             return None
 
-    def get_global_latest_stock_dividends_date(self) -> date:
+    def get_global_latest_stock_dividends_date(self) -> Optional[date]:
         from src.model.us_stock_dividends_model import UsStockDividendsModel
 
-        query = UsStockDividendsModel.QUERY_GLOBAL_LATEST_EX_DATE_SQL
         try:
-            res = self.db.client.query_df(query)
-            last_date = res.iloc[0]["last_date"]
-            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
-                return pd.to_datetime(last_date).date()
-            return None
+            return self._extract_valid_date(
+                self.db.client.query_df(UsStockDividendsModel.QUERY_GLOBAL_LATEST_EX_DATE_SQL)
+            )
         except Exception as e:
             app_logger.error(f"全局派息时间查询失败: {e}")
             return None
 
-    def get_global_latest_stock_splits_date(self) -> date:
+    def get_global_latest_stock_splits_date(self) -> Optional[date]:
         from src.model.us_stock_splits_model import UsStockSplitsModel
 
-        query = UsStockSplitsModel.QUERY_GLOBAL_LATEST_EXECUTION_DATE_SQL
         try:
-            res = self.db.client.query_df(query)
-            last_date = res.iloc[0]["last_date"]
-            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
-                return pd.to_datetime(last_date).date()
-            return None
+            return self._extract_valid_date(
+                self.db.client.query_df(
+                    UsStockSplitsModel.QUERY_GLOBAL_LATEST_EXECUTION_DATE_SQL
+                )
+            )
         except Exception as e:
             app_logger.error(f"全局股票拆分时间查询失败: {e}")
             return None
 
-    def insert_stock_10k_sections_raw(self, df: pd.DataFrame):
+    def insert_stock_10k_sections_raw(self, df: pd.DataFrame) -> None:
         try:
             self.db.client.insert_df("us_stock_10k_sections_raw", df)
         except Exception as e:
-            app_logger.error(
-                f"插入 us_stock_10k_sections_raw 失败: {e}"
-            )
-            raise e
+            app_logger.error(f"插入 us_stock_10k_sections_raw 失败: {e}")
+            raise
 
-    def insert_stock_risk_factors(self, df: pd.DataFrame):
+    def insert_stock_risk_factors(self, df: pd.DataFrame) -> None:
         try:
             self.db.client.insert_df("us_stock_risk_factors", df)
         except Exception as e:
             app_logger.error(f"插入 us_stock_risk_factors 失败: {e}")
-            raise e
+            raise
 
-    def insert_stock_risk_taxonomy(self, df: pd.DataFrame):
+    def insert_stock_risk_taxonomy(self, df: pd.DataFrame) -> None:
         try:
             self.db.client.insert_df("us_stock_risk_taxonomy", df)
         except Exception as e:
             app_logger.error(f"插入 us_stock_risk_taxonomy 失败: {e}")
-            raise e
+            raise
 
-    def get_global_latest_10k_sections_date(self) -> date:
-        query = "SELECT max(filing_date) as last_date FROM us_stock_10k_sections_raw"
+    def get_global_latest_10k_sections_date(self) -> Optional[date]:
+        from src.model.us_stock_10k_sections_raw_model import UsStock10kSectionsRawModel
+
         try:
-            res = self.db.client.query_df(query)
-            last_date = res.iloc[0]["last_date"]
-            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
-                return pd.to_datetime(last_date).date()
-            return None
+            return self._extract_valid_date(
+                self.db.client.query_df(
+                    UsStock10kSectionsRawModel.QUERY_GLOBAL_LATEST_FILING_DATE_SQL
+                )
+            )
         except Exception as e:
             app_logger.error(f"全局 10K 爬取时间查询失败: {e}")
             return None
 
-    def get_global_latest_risk_factors_date(self) -> date:
-        query = "SELECT max(filing_date) as last_date FROM us_stock_risk_factors"
+    def get_global_latest_risk_factors_date(self) -> Optional[date]:
+        from src.model.us_stock_risk_factors_model import UsStockRiskFactorsModel
+
         try:
-            res = self.db.client.query_df(query)
-            last_date = res.iloc[0]["last_date"]
-            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
-                return pd.to_datetime(last_date).date()
-            return None
+            return self._extract_valid_date(
+                self.db.client.query_df(
+                    UsStockRiskFactorsModel.QUERY_GLOBAL_LATEST_FILING_DATE_SQL
+                )
+            )
         except Exception as e:
             app_logger.error(f"全局风险因素时间查询失败: {e}")
             return None
 
-    def get_latest_stock_earnings_raw_timestamp(self, cik: str) -> datetime:
-        from src.model.us_stock_earnings_raw_model import UsStockEarningsRawModel
-
-        query = UsStockEarningsRawModel.QUERY_LATEST_PUBLISH_TS_BY_CIK_SQL.format(
-            cik=cik
+    def get_latest_stock_earnings_raw_timestamp(self, cik: str) -> Optional[datetime]:
+        # 当前模型未定义，保留接口但不让运行时抛 ImportError。
+        app_logger.warning(
+            f"未找到 Earnings Raw Model，跳过 {cik} 的最新财报原文时间查询。"
         )
-        try:
-            res = self.db.client.query_df(query)
-            last_ts = res.iloc[0]["last_ts"]
-            if pd.notna(last_ts) and pd.to_datetime(last_ts).year > 1970:
-                return pd.to_datetime(last_ts)
-            return None
-        except Exception as e:
-            app_logger.error(f"查询{cik}最新财报原文时间戳失败: {e}")
-            return None
+        return None
 
-    def get_global_latest_news_timestamp(self) -> datetime:
-        """获取全市场新闻原文表中的最新时间戳"""
+    def get_global_latest_news_timestamp(self) -> Optional[datetime]:
+        """获取全市场新闻原文表中的最新时间戳。"""
         try:
-            res = self.db.client.query_df(
-                UsStockNewsRawModel.MAX_PUBLISHED_UTC_QUERY_SQL
+            return self._extract_valid_datetime(
+                self.db.client.query_df(UsStockNewsRawModel.MAX_PUBLISHED_UTC_QUERY_SQL)
             )
-            last_ts = res.iloc[0]["last_ts"]
-            if pd.notna(last_ts) and pd.to_datetime(last_ts).year > 1970:
-                return pd.to_datetime(last_ts)
-            return None
         except Exception as e:
             app_logger.error(f"查询全市场新闻最新时间戳失败: {e}")
             return None
 
-    def insert_stock_news_raw(self, df: pd.DataFrame):
+    def insert_stock_news_raw(self, df: pd.DataFrame) -> None:
         try:
             self.db.client.insert_df("us_stock_news_raw", df)
         except Exception as e:
-            app_logger.error(f"{df.iloc[0]['cik']} 插入 us_stock_news_raw 失败: {e}")
-        except Exception as e:
-            app_logger.error(f"插入 us_stock_daily_float 失败: {e}")
-            raise e
+            cik = ""
+            if not df.empty and "cik" in df.columns:
+                cik = str(df.iloc[0]["cik"])
+            app_logger.error(f"{cik} 插入 us_stock_news_raw 失败: {e}")
+            raise

@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
-import os
+from src.config.settings import settings
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from src.api.massive_api import MassiveApi
@@ -20,7 +19,7 @@ class MassiveFilingsDisclosuresScraper:
         self.massive = MassiveApi()
         self.fundamental_repo = FundamentalRepo()
         self.scheduler = scheduler
-        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+        self.COLD_START_DATE = settings.scraper.scraping_start_date
 
     def start(self):
         if self.scheduler:
@@ -95,7 +94,7 @@ class MassiveFilingsDisclosuresScraper:
         logger.info(f"Risk Factors 数据拉取完成，新增 {len(clean_df)} 条记录。")
 
     def sync_risk_taxonomy(self):
-        logger.info(f"🚀 拉取 Risk Taxonomy 数据 ...")
+        logger.info("🚀 拉取 Risk Taxonomy 数据 ...")
         df_raw = self.massive.get_risk_taxonomy(limit=5000)
 
         if df_raw is None or df_raw.empty:

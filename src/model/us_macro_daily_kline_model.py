@@ -38,6 +38,10 @@ class UsMacroDailyKlineModel(BaseClickHouseModel):
     )
 
     @classmethod
+    def build_max_trade_date_query_sql(cls, symbols: list[str]) -> str:
+        return cls.MAX_TRADE_DATE_QUERY_SQL.format(symbols_str=cls.sql_in_clause(symbols))
+
+    @classmethod
     def format_dataframe(cls, df: pd.DataFrame, default_ticker: str = '') -> pd.DataFrame:
         if df.empty:
             return pd.DataFrame()

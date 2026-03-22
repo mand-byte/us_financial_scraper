@@ -30,7 +30,7 @@ from src.dao.fundamental_repo import FundamentalRepo
 from src.dao.market_data_repo import MarketDataRepo
 from src.model.us_stock_news_raw_model import UsStockNewsRawModel
 from src.utils.logger import app_logger as logger
-import os
+from src.config.settings import settings
 
 
 class MassiveNewsScraper:
@@ -41,7 +41,7 @@ class MassiveNewsScraper:
         self.fundamental_repo = FundamentalRepo()
         self.market_repo = MarketDataRepo()
         self.scheduler = scheduler
-        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+        self.COLD_START_DATE = settings.scraper.scraping_start_date
         self.API_MAX_LIMIT = 1000
 
     def start(self):

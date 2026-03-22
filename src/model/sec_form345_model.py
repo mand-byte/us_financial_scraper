@@ -43,6 +43,28 @@ def _get_state_ddl(table_name):
 
 class _SecFormBase(BaseClickHouseModel):
     QUERY_LATEST_TS_BY_CIK_SQL: ClassVar[str] = "SELECT issuer_cik as cik, max(acceptance_datetime) as last_ts FROM {table_name} GROUP BY issuer_cik"
+    QUERY_GLOBAL_LATEST_ACCEPTANCE_DATE_SQL: ClassVar[str] = (
+        "SELECT max(acceptance_datetime) as last_date "
+        "FROM sec_form345_insider_transactions"
+    )
+    QUERY_BY_FIGI_SQL: ClassVar[str] = (
+        "SELECT * FROM sec_form345_insider_transactions "
+        "WHERE figi = {figi} "
+        "ORDER BY acceptance_datetime DESC "
+        "LIMIT {limit}"
+    )
+    QUERY_BY_OWNER_SQL: ClassVar[str] = (
+        "SELECT * FROM sec_form345_insider_transactions "
+        "WHERE reporting_owner_name = {owner_name} "
+        "ORDER BY acceptance_datetime DESC "
+        "LIMIT {limit}"
+    )
+    QUERY_BY_TICKER_SQL: ClassVar[str] = (
+        "SELECT * FROM sec_form345_insider_transactions "
+        "WHERE issuer_ticker = {ticker} "
+        "ORDER BY acceptance_datetime DESC "
+        "LIMIT {limit}"
+    )
     
     SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {
         "issuer_ticker": {"type": "str", "default": ""},
@@ -66,6 +88,36 @@ class _SecFormBase(BaseClickHouseModel):
         "accession_number": {"type": "str", "default": ""},
         "form_type": {"type": "str", "default": ""},
     }
+
+    @classmethod
+    def build_query_latest_ts_by_cik_sql(cls, table_name: str) -> str:
+        return cls.QUERY_LATEST_TS_BY_CIK_SQL.format(
+            table_name=cls.sql_identifier(table_name)
+        )
+
+    @classmethod
+    def build_query_by_figi_sql(cls, figi: str, limit: int) -> str:
+        safe_limit = max(1, int(limit))
+        return cls.QUERY_BY_FIGI_SQL.format(
+            figi=cls.sql_literal(figi),
+            limit=safe_limit,
+        )
+
+    @classmethod
+    def build_query_by_owner_sql(cls, owner_name: str, limit: int) -> str:
+        safe_limit = max(1, int(limit))
+        return cls.QUERY_BY_OWNER_SQL.format(
+            owner_name=cls.sql_literal(owner_name),
+            limit=safe_limit,
+        )
+
+    @classmethod
+    def build_query_by_ticker_sql(cls, ticker: str, limit: int) -> str:
+        safe_limit = max(1, int(limit))
+        return cls.QUERY_BY_TICKER_SQL.format(
+            ticker=cls.sql_literal(ticker),
+            limit=safe_limit,
+        )
 
     @classmethod
     def format_dataframe(cls, df: pd.DataFrame) -> pd.DataFrame:

@@ -17,7 +17,6 @@ Massive 公司行动搜刮器 (MassiveActionsScraper)
 ================================================================================
 """
 
-import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional
@@ -28,7 +27,7 @@ from src.dao.market_data_repo import MarketDataRepo
 from src.model.us_stock_dividends_model import UsStockDividendsModel
 from src.model.us_stock_splits_model import UsStockSplitsModel
 from src.utils.logger import app_logger as logger
-import os
+from src.config.settings import settings
 
 
 class MassiveActionsScraper:
@@ -40,7 +39,7 @@ class MassiveActionsScraper:
         self.fundamental_repo = FundamentalRepo()
         self.market_repo = MarketDataRepo()
         self.scheduler = scheduler
-        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+        self.COLD_START_DATE = settings.scraper.scraping_start_date
 
     def start(self):
         if self.scheduler:

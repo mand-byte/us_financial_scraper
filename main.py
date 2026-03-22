@@ -1,10 +1,13 @@
 import signal
 from importlib import import_module
+import sys
 
 from src.utils.logger import app_logger
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.executors.pool import ThreadPoolExecutor
 from dotenv import load_dotenv
+from src.dao.clickhouse_manager import get_db_manager, ClickHouseConnectionError
+from src.config.settings import settings
 
 SCRAPER_SPECS = [
     ("src.massive_kline_scraper", "MassiveKlineScraper"),
@@ -25,15 +28,23 @@ def _load_scraper_class(module_name: str, class_name: str):
     module = import_module(module_name)
     return getattr(module, class_name)
 
+
 load_dotenv()
+
 executors = {"default": ThreadPoolExecutor(20)}
 
 job_defaults = {"coalesce": True, "max_instances": 1, "misfire_grace_time": 600}
 
 
+def _log_startup_settings() -> None:
+    app_logger.info(f"🧩 启动配置快照(脱敏): {settings.masked_snapshot()}")
+
+
 class ScraperOrchestrator:
     def __init__(self):
         app_logger.info("🏗️ 初始化搜刮调度中心...")
+        self.is_running = False
+        self._db_preflight()
         self.scheduler = BlockingScheduler(
             timezone="US/Eastern", executors=executors, job_defaults=job_defaults
         )
@@ -43,7 +54,17 @@ class ScraperOrchestrator:
                 scraper_cls = _load_scraper_class(module_name, class_name)
                 self.scrapers.append(scraper_cls(self.scheduler))
             except Exception as exc:
-                app_logger.warning(f"跳过搜刮器 {class_name}: {exc}")
+                raise RuntimeError(f"初始化搜刮器 {class_name} 失败: {exc}") from exc
+
+    def _db_preflight(self) -> None:
+        """Fail-fast guard: DB must be healthy before any scraper starts."""
+        try:
+            db = get_db_manager()
+            db.client.command("SELECT 1")
+        except ClickHouseConnectionError:
+            raise
+        except Exception as exc:
+            raise ClickHouseConnectionError(f"数据库预检失败: {exc}") from exc
 
     def start_all(self):
         self.is_running = True
@@ -73,6 +94,7 @@ class ScraperOrchestrator:
 
     def handle_exit(self, sig=None, frame=None):
         import os
+
         if self.is_running:
             self.is_running = False
             try:
@@ -86,5 +108,13 @@ class ScraperOrchestrator:
 
 
 if __name__ == "__main__":
-    orchestrator = ScraperOrchestrator()
-    orchestrator.run_forever()
+    try:
+        _log_startup_settings()
+        orchestrator = ScraperOrchestrator()
+        orchestrator.run_forever()
+    except ClickHouseConnectionError as exc:
+        app_logger.error(f"❌ 启动失败，数据库不可用: {exc}")
+        sys.exit(2)
+    except Exception as exc:
+        app_logger.error(f"❌ 启动失败: {exc}")
+        sys.exit(1)

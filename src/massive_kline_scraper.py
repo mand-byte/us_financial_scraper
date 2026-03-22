@@ -34,20 +34,49 @@ from src.model import (
 )
 from src.dao.market_data_repo import MarketDataRepo
 from src.utils.logger import app_logger as logger
-import os
+from src.config.settings import settings
 
 
 class MassiveKlineScraper:
     NYC = ZoneInfo("America/New_York")
-    API_KLINE_MAX_LIMIT = 50000
+    API_KLINE_MAX_LIMIT = 2000
     API_TICKERS_MAX_LIMIT = 1000
 
     def __init__(self, scheduler: BlockingScheduler):
         self.massive = MassiveApi()
         self.repo = MarketDataRepo()
         self.scheduler = scheduler
-        self.KLINE_SPAN = int(os.getenv("KLINE_SPAN", 5))
-        self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2021-01-01")
+        self.KLINE_SPAN = settings.scraper.kline_span
+        self.COLD_START_DATE = settings.scraper.scraping_start_date
+
+    def _fetch_tickers_by_active(self, active: bool) -> pd.DataFrame | None:
+        frames: list[pd.DataFrame] = []
+        tickers_raw = self.massive.get_all_tickers(sort_type="ticker", active=active)
+        if tickers_raw is None:
+            logger.error("Massive: 迭代获取股票列表中断,等待调度器下次运行")
+            return None
+        if tickers_raw.empty:
+            return pd.DataFrame()
+
+        frames.append(tickers_raw)
+        last_ticker = tickers_raw.iloc[-1]["ticker"]
+        while True:
+            tickers_raw = self.massive.get_all_tickers(
+                ticker_filter_type="ticker.gt",
+                ticker=last_ticker,
+                sort_type="ticker",
+                active=active,
+            )
+            if tickers_raw is None:
+                logger.error("Massive: 迭代获取股票列表中断,等待调度器下次运行")
+                return None
+            if tickers_raw.empty:
+                break
+            frames.append(tickers_raw)
+            last_ticker = tickers_raw.iloc[-1]["ticker"]
+            if len(tickers_raw) < self.API_TICKERS_MAX_LIMIT:
+                break
+        return pd.concat(frames, ignore_index=True)
 
     def start(self):
         """异步注册与高频调度启动"""
@@ -91,11 +120,13 @@ class MassiveKlineScraper:
             raw_data = self.massive.get_ticker_events(ticker)
             if raw_data is None:
                 logger.warning(f"Massive: 获取 {ticker} 的 ticker events 失败")
-                result.append({
-                    "composite_figi": figi,
-                    "ticker": ticker,
-                    "date": "1970-01-01",
-                })
+                result.append(
+                    {
+                        "composite_figi": figi,
+                        "ticker": ticker,
+                        "date": "1970-01-01",
+                    }
+                )
                 continue
             events = raw_data.get("events", [])
 
@@ -106,13 +137,13 @@ class MassiveKlineScraper:
                     "date": event["date"],
                 }
                 for event in events
-                if "ticker_change" in event 
+                if "ticker_change" in event
                 and event.get("ticker_change", {}).get("ticker")
                 and event.get("date")
             ]
             if ticker_date_map:
                 result.extend(ticker_date_map)
-            
+
             # 增量写入，防止进程中断导致全量丢失 (1.9w 股票需要跑很久)
             if len(result) >= 500:
                 data_raw = pd.DataFrame(result)
@@ -141,12 +172,14 @@ class MassiveKlineScraper:
             | (df["composite_figi"] == "")
             | (df["composite_figi"] == "nan")
         )
-        
-        missing_data = df.loc[mask_missing, ["ticker", "primary_exchange"]].drop_duplicates(subset=["ticker"])
+
+        missing_data = df.loc[
+            mask_missing, ["ticker", "primary_exchange"]
+        ].drop_duplicates(subset=["ticker"])
 
         if missing_data.empty:
             return df
-            
+
         missing_tasks = missing_data.to_dict("records")
 
         # 2. 调用 OpenFIGI 客户端获取映射
@@ -176,69 +209,36 @@ class MassiveKlineScraper:
             old_df = UsStockUniverseModel.format_dataframe(old_df)
         try:
             # 1. 全量抓取股票 (不区分活跃状态，由 API 或后续逻辑统一处理)
-            all_tickers_dfs = []
             logger.info("  正在通过 ticker 顺序迭代拉取全量 Ticker 列表...")
-            
-            tickers_raw = self.massive.get_all_tickers(sort_type="ticker", active=True)
-            if tickers_raw is not None and not tickers_raw.empty:
-                all_tickers_dfs.append(tickers_raw)
-                last_ticker = tickers_raw.iloc[-1]["ticker"]
-              
-                while True:
-                    tickers_raw = self.massive.get_all_tickers(
-                        ticker_filter_type="ticker.gt",
-                        ticker=last_ticker,
-                        sort_type="ticker",
-                        active=True
-                    )
-                    if tickers_raw is None:
-                        logger.error("Massive: 迭代获取股票列表中断,等待调度器下次运行")
-                        return
-                    if tickers_raw.empty:
-                        break
-                    all_tickers_dfs.append(tickers_raw)
-                    last_ticker = tickers_raw.iloc[-1]["ticker"]
-                    if len(tickers_raw)<self.API_TICKERS_MAX_LIMIT:
-                        break
-            else:
-                logger.error(f"Massive: api 返回为空，等待调度器下次运行")
-                return 
-            tickers_raw = self.massive.get_all_tickers(sort_type="ticker", active=False)
-            if tickers_raw is not None and not tickers_raw.empty:
-                all_tickers_dfs.append(tickers_raw)
-                last_ticker = tickers_raw.iloc[-1]["ticker"]
-              
-                while True:
-                    tickers_raw = self.massive.get_all_tickers(
-                        ticker_filter_type="ticker.gt",
-                        ticker=last_ticker,
-                        sort_type="ticker",
-                        active=False
-                    )
-                    if tickers_raw is None:
-                        logger.error("Massive: 迭代获取股票列表中断,等待调度器下次运行")
-                        return
-                    if tickers_raw.empty:
-                        break
-                    all_tickers_dfs.append(tickers_raw)
-                    last_ticker = tickers_raw.iloc[-1]["ticker"]
-                    if len(tickers_raw)<self.API_TICKERS_MAX_LIMIT:
-                        break
-            else:
-                logger.error(f"Massive: api 返回为空，等待调度器下次运行")
-                return      
+            active_df = self._fetch_tickers_by_active(active=True)
+            if active_df is None:
+                return
+            inactive_df = self._fetch_tickers_by_active(active=False)
+            if inactive_df is None:
+                return
+
+            all_tickers_dfs = [df for df in [active_df, inactive_df] if not df.empty]
+            if not all_tickers_dfs:
+                logger.error("Massive: api 返回为空，等待调度器下次运行")
+                return
             all_tickers_raw = pd.concat(all_tickers_dfs, ignore_index=True)
-            
+
             # 【过滤】仅保留普通股 (CS) 和 ADR (ADRC)，剔除权证、优先股、单元等
             if "type" in all_tickers_raw.columns:
                 before_count = len(all_tickers_raw)
-                all_tickers_raw = all_tickers_raw[all_tickers_raw["type"].isin(["CS", "ADRC"])]
+                all_tickers_raw = all_tickers_raw[
+                    all_tickers_raw["type"].isin(["CS", "ADRC"])
+                ]
                 after_count = len(all_tickers_raw)
-                logger.info(f"✂️ 已过滤非标准股票 (Warrant/PFD/Unit等)，剩余 {after_count} / {before_count} 个 Ticker。")
+                logger.info(
+                    f"✂️ 已过滤非标准股票 (Warrant/PFD/Unit等)，剩余 {after_count} / {before_count} 个 Ticker。"
+                )
 
             ticker_count = len(all_tickers_raw)
-            logger.info(f"📊 本次宇宙表同步准备更新，共计处理 {ticker_count} 个 Ticker。")
-            
+            logger.info(
+                f"📊 本次宇宙表同步准备更新，共计处理 {ticker_count} 个 Ticker。"
+            )
+
             all_tickers = UsStockUniverseModel.format_dataframe(all_tickers_raw)
 
             # 3. 继承老表的 FIGI (基于 Ticker 映射)
@@ -246,7 +246,13 @@ class MassiveKlineScraper:
             if not old_df.empty:
                 # 确保 FIGI 是字符串类型，防止 bytes 导致字典主键匹配失败
                 old_df["composite_figi"] = old_df["composite_figi"].apply(
-                    lambda x: x.decode("utf-8") if isinstance(x, bytes) else str(x) if pd.notna(x) else ""
+                    lambda x: (
+                        x.decode("utf-8")
+                        if isinstance(x, bytes)
+                        else str(x)
+                        if pd.notna(x)
+                        else ""
+                    )
                 )
                 ticker_to_figi = old_df.set_index("ticker")["composite_figi"].to_dict()
                 # 统一处理空值，确保 fillna 生效
@@ -290,11 +296,16 @@ class MassiveKlineScraper:
                 all_tickers["composite_figi"].notna()
                 & (all_tickers["composite_figi"] != "")
             ]
-            
+
             no_figi_count = len(all_tickers) - len(final_to_insert)
             if no_figi_count > 0:
-                no_figi_df = all_tickers[all_tickers["composite_figi"].isna() | (all_tickers["composite_figi"] == "")]
-                logger.warning(f"⚠️ 最终仍有 {no_figi_count} 个 Ticker 缺失 FIGI (大多为特殊标的)，将跳过入库。示例：{no_figi_df.head(5)}")
+                no_figi_df = all_tickers[
+                    all_tickers["composite_figi"].isna()
+                    | (all_tickers["composite_figi"] == "")
+                ]
+                logger.warning(
+                    f"⚠️ 最终仍有 {no_figi_count} 个 Ticker 缺失 FIGI (大多为特殊标的)，将跳过入库。示例：{no_figi_df.head(5)}"
+                )
 
             if not final_to_insert.empty:
                 # 6. 全量/增量写入（ReplacingMergeTree 会自动根据 FIGI 处理新增或更新）
@@ -313,18 +324,6 @@ class MassiveKlineScraper:
                     if not new_tickers.empty:
                         self.load_all_figi_ticker_mapping(new_tickers)
 
-            
-            # 4. 找出真正缺失 FIGI 的行进行补全
-            # 只要是新 Ticker 或者 依然没有 FIGI 的记录，都需要去 OpenFIGI 跑一趟
-            missing_figi_mask = (
-                (all_tickers["composite_figi"].isna())
-                | (all_tickers["composite_figi"] == "")
-                | (all_tickers["composite_figi"] == "nan")
-            )
-
-            if missing_figi_mask.any():
-                pending_df = all_tickers[missing_figi_mask].copy()
-                logger.info(f"发现 {len(pending_df)} 条记录缺失 FIGI，2执行补全...")
         except Exception as e:
             logger.error(f"宇宙表同步失败: {e}", exc_info=True)
 
@@ -423,7 +422,7 @@ class MassiveKlineScraper:
         logger.info("✅ K 线拉取任务完成。")
 
     def stop(self):
-        if hasattr(self, 'scheduler') and self.scheduler:
+        if hasattr(self, "scheduler") and self.scheduler:
             try:
                 self.scheduler.remove_job("universe_sync")
             except Exception:

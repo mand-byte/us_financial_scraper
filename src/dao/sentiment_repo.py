@@ -1,5 +1,5 @@
 from datetime import datetime
-import os
+from src.config.settings import settings
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -33,5 +33,5 @@ class SentimentRepo:
         except Exception as exc:
             app_logger.error(f"查询 GDELT 最新时间失败: {exc}")
 
-        start_str = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+        start_str = settings.scraper.scraping_start_date
         return datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
