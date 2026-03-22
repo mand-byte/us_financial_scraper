@@ -1,7 +1,9 @@
 import time
-import requests
-import pandas as pd
 from typing import List, Dict, Optional
+
+import pandas as pd
+import requests
+
 from src.utils.logger import app_logger
 from src.config.settings import settings
 
@@ -13,6 +15,7 @@ class OpenFIGIClient:
     """
 
     URL = "https://api.openfigi.com/v3/mapping"
+    REQUEST_TIMEOUT_SECONDS = (5, 30)
 
     def __init__(self):
         self.api_key = settings.api.openfigi_api_key
@@ -83,10 +86,23 @@ class OpenFIGIClient:
         if self.api_key:
             headers["X-OPENFIGI-APIKEY"] = self.api_key
 
-        resp = requests.post(self.URL, json=jobs, headers=headers)
+        try:
+            resp = requests.post(
+                self.URL,
+                json=jobs,
+                headers=headers,
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            app_logger.error(f"OpenFIGI 网络请求失败: {exc}")
+            return None
 
         if resp.status_code == 200:
-            return resp.json()
+            try:
+                return resp.json()
+            except ValueError as exc:
+                app_logger.error(f"OpenFIGI 返回非 JSON 响应: {exc}")
+                return None
         elif resp.status_code == 429:
             app_logger.error("触发 OpenFIGI 速率限制，请检查 API Key 权限")
             return None

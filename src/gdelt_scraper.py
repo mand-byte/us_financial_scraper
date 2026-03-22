@@ -1,25 +1,95 @@
-import pandas as pd
-import numpy as np
-import requests
-import zipfile
 import io
+import zipfile
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+import numpy as np
+import pandas as pd
+import requests
+from apscheduler.schedulers.blocking import BlockingScheduler
+
 from src.dao import SentimentRepo
 from src.model import GdeltMacroSentimentModel
-from apscheduler.schedulers.blocking import BlockingScheduler
 from src.utils.logger import app_logger
 
 
 # 每小时的0分，15分，30分，45分拉取一次。
 class GDELTScraper:
-    def __init__(self, scheduler: BlockingScheduler):
+    MAX_REMOTE_FAILS_PER_FILE = 3
+    MAX_FILES_PER_RUN = 256
 
-        self.master_url = "http://data.gdeltproject.org/gdeltv2/masterfilelist.txt"
+    def __init__(self, scheduler: BlockingScheduler):
+        # data.gdeltproject.org 当前仍以 HTTP 为主，HTTPS 证书可能出现 hostname mismatch。
+        self.master_urls = (
+            "http://data.gdeltproject.org/gdeltv2/masterfilelist.txt",
+            "https://data.gdeltproject.org/gdeltv2/masterfilelist.txt",
+        )
         self.scheduler = scheduler
         # 核心关注的 CAMEO 根代码 (系统性风险)
         self.target_codes = ["16", "17", "18", "19", "20"]
         self.remote_fail_counts = {}
+
+    def _get_with_scheme_fallback(self, url: str, timeout: int) -> requests.Response | None:
+        """Try URL first; if HTTPS SSL fails, fallback to HTTP for GDELT CDN compatibility."""
+        candidates = [url]
+        if url.startswith("https://"):
+            candidates.append("http://" + url[len("https://") :])
+
+        for candidate in candidates:
+            try:
+                r = requests.get(candidate, timeout=timeout)
+                if r.status_code == 200:
+                    return r
+                app_logger.warning(
+                    f"⚠️ 请求 {candidate} 返回非 200 状态码: {r.status_code}"
+                )
+            except requests.exceptions.SSLError as exc:
+                app_logger.warning(f"⚠️ 请求 {candidate} SSL 失败: {exc}")
+            except requests.exceptions.RequestException as exc:
+                app_logger.warning(f"⚠️ 请求 {candidate} 网络失败: {exc}")
+        return None
+
+    def _fetch_master_list_text(self) -> str | None:
+        for url in self.master_urls:
+            r = self._get_with_scheme_fallback(url, timeout=20)
+            if r is not None:
+                return r.text
+        return None
+
+    def _parse_export_file_candidates(
+        self, master_text: str, start_ts: datetime
+    ) -> list[tuple[datetime, str]]:
+        """Parse and sort candidate export files strictly by timestamp."""
+        candidates: dict[datetime, str] = {}
+        for line in master_text.strip().splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+
+            file_url = parts[2]
+            if not file_url.endswith(".export.CSV.zip"):
+                continue
+
+            ts_str = file_url.split("/")[-1].split(".")[0]
+            try:
+                file_ts = datetime.strptime(ts_str, "%Y%m%d%H%M%S").replace(
+                    tzinfo=ZoneInfo("UTC")
+                )
+            except ValueError:
+                continue
+
+            if file_ts <= start_ts:
+                continue
+
+            # 去重: 同一时间戳保留后出现的 URL
+            candidates[file_ts] = file_url
+
+        ordered = sorted(candidates.items(), key=lambda x: x[0])
+        if len(ordered) > self.MAX_FILES_PER_RUN:
+            app_logger.warning(
+                f"⚠️ GDELT 待处理文件过多({len(ordered)})，本轮仅处理前 {self.MAX_FILES_PER_RUN} 个，剩余下轮继续。"
+            )
+        return ordered[: self.MAX_FILES_PER_RUN]
 
     def fetch_and_process_v2(self, file_url, timestamp_str):
         """处理 GDELT 2.0 15分钟增量文件并转换为智能加权聚合宽表记录"""
@@ -29,13 +99,16 @@ class GDELTScraper:
         )
 
         try:
-            r = requests.get(file_url, timeout=30)
-            if r.status_code != 200:
-                app_logger.warning(f"❌ GDELT 远程服务器错误 {filename}，HTTP状态码: {r.status_code}")
+            r = self._get_with_scheme_fallback(file_url, timeout=30)
+            if r is None:
+                app_logger.warning(f"❌ GDELT 远程服务器错误 {filename}，请求失败")
                 return -1
 
             # 1. 极速读取内存中的 ZIP 内容
             z = zipfile.ZipFile(io.BytesIO(r.content))
+            if not z.namelist():
+                app_logger.error(f"❌ GDELT ZIP 为空: {filename}")
+                return 0
             csv_filename = z.namelist()[0]
 
             # 读取：26:EventRootCode, 30:GoldsteinScale, 31:NumMentions, 33:Confidence, 34:AvgTone
@@ -53,6 +126,22 @@ class GDELTScraper:
                 ],
                 dtype={"EventRootCode": str},
             )
+            if df.empty:
+                app_logger.warning(f"⚠️ GDELT 文件无内容: {filename}")
+                return 1
+
+            for col in ["GoldsteinScale", "NumMentions", "Confidence", "AvgTone"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.dropna(
+                subset=["EventRootCode", "GoldsteinScale", "NumMentions", "Confidence", "AvgTone"]
+            )
+            if df.empty:
+                app_logger.warning(f"⚠️ GDELT 文件有效记录为空: {filename}")
+                return 1
+
+            # 防止脏值放大
+            df["NumMentions"] = df["NumMentions"].clip(lower=0)
+            df["Confidence"] = df["Confidence"].clip(lower=0, upper=100)
 
             df_filtered = df[df["EventRootCode"].isin(self.target_codes)].copy()
 
@@ -111,6 +200,9 @@ class GDELTScraper:
                 to_save = GdeltMacroSentimentModel.format_dataframe(
                     raw_df
                 )  # 验证数据结构正确性
+                if to_save.empty or to_save["publish_timestamp"].isna().any():
+                    app_logger.error(f"❌ GDELT 清洗后结果非法，跳过写入: {filename}")
+                    return 0
 
                 SentimentRepo().insert_gdelt_macro_sentiment(to_save)
 
@@ -129,52 +221,59 @@ class GDELTScraper:
         repo = SentimentRepo()
         start_ts = repo.get_latest_gdelt_cursor()
         app_logger.info(f"🔄 GDELT 增量同步起点: {start_ts}")
+        processed_files = 0
+        success_files = 0
+        skipped_remote_files = 0
 
         try:
-            r = requests.get(self.master_url, timeout=20)
-            if r.status_code != 200:
+            master_text = self._fetch_master_list_text()
+            if not master_text:
+                app_logger.error("❌ GDELT 获取列表失败: 所有 masterfilelist 地址均不可用")
                 return False
 
-            lines = r.text.strip().split("\n")
-            for line in lines:
-                parts = line.split(" ")
-                if len(parts) < 3:
-                    continue
+            candidates = self._parse_export_file_candidates(master_text, start_ts)
+            if not candidates:
+                app_logger.debug("GDELT 本轮无新增文件。")
+                return True
 
-                file_url = parts[2]
-                if ".export.CSV.zip" not in file_url:
-                    continue
-
-                file_ts_str = file_url.split("/")[-1].split(".")[0]
-                try:
-                    file_ts = datetime.strptime(file_ts_str, "%Y%m%d%H%M%S").replace(
-                        tzinfo=ZoneInfo("UTC")
-                    )
-                except ValueError:
-                    continue
-                if file_ts > start_ts:
-                    app_logger.info(f"📥 聚合 GDELT 开始下载文件: {file_ts_str}")
-                    status = self.fetch_and_process_v2(file_url, file_ts_str)
-                    if status == 1:
+            for file_ts, file_url in candidates:
+                file_ts_str = file_ts.strftime("%Y%m%d%H%M%S")
+                app_logger.debug(f"📥 聚合 GDELT 开始下载文件: {file_ts_str}")
+                processed_files += 1
+                status = self.fetch_and_process_v2(file_url, file_ts_str)
+                if status == 1:
+                    start_ts = file_ts
+                    repo.upsert_gdelt_cursor(start_ts)
+                    self.remote_fail_counts.pop(file_ts_str, None)
+                    success_files += 1
+                elif status == -1:
+                    # 远程服务器问题
+                    fails = self.remote_fail_counts.get(file_ts_str, 0) + 1
+                    self.remote_fail_counts[file_ts_str] = fails
+                    if fails >= self.MAX_REMOTE_FAILS_PER_FILE:
+                        app_logger.error(
+                            f"🧨 GDELT 文件远程错误达到 {self.MAX_REMOTE_FAILS_PER_FILE} 次，跳过该文件: {file_ts_str}"
+                        )
                         start_ts = file_ts
                         repo.upsert_gdelt_cursor(start_ts)
                         self.remote_fail_counts.pop(file_ts_str, None)
-                    elif status == -1:
-                        # 远程服务器问题
-                        fails = self.remote_fail_counts.get(file_ts_str, 0) + 1
-                        self.remote_fail_counts[file_ts_str] = fails
-                        if fails >= 3:
-                            app_logger.error(f"🧨 GDELT 文件远程错误达到 3 次，跳过该文件: {file_ts_str}")
-                            start_ts = file_ts
-                            repo.upsert_gdelt_cursor(start_ts)
-                            self.remote_fail_counts.pop(file_ts_str, None)
-                        else:
-                            app_logger.warning(f"⚠️ GDELT 文件远程错误 (第 {fails} 次): {file_ts_str}，停止本次增量，等待下次调度")
-                            return
+                        skipped_remote_files += 1
                     else:
-                        # 自身网络问题或解析问题
-                        app_logger.error(f"🛑 GDELT 自身网络或解析异常：{file_ts_str}，一直卡住等待恢复")
+                        app_logger.warning(
+                            f"⚠️ GDELT 文件远程错误 (第 {fails} 次): {file_ts_str}，停止本次增量，等待下次调度"
+                        )
                         return
+                else:
+                    # 自身网络问题或解析问题
+                    app_logger.error(
+                        f"🛑 GDELT 自身网络或解析异常：{file_ts_str}，保持游标不推进并等待恢复"
+                    )
+                    return
+
+            app_logger.info(
+                f"✅ GDELT 本轮完成: 候选={len(candidates)} 处理={processed_files} 成功={success_files} "
+                f"远端跳过={skipped_remote_files} 游标={start_ts}"
+            )
 
         except Exception as e:
             app_logger.error(f"❌ GDELT 获取列表失败: {str(e)}")
@@ -197,6 +296,9 @@ class GDELTScraper:
 
     def stop(self):
         if self.scheduler:
-            self.scheduler.remove_job("15min_gdelt_scraping")
+            try:
+                self.scheduler.remove_job("15min_gdelt_scraping")
+            except Exception:
+                pass
 
         app_logger.info("🛑 GDELT 聚合搜刮器 子线程已退出。")

@@ -24,14 +24,26 @@ class MassiveFilingsDisclosuresScraper:
     def start(self):
         if self.scheduler:
             self.scheduler.add_job(
-                self.refresh_all,
+                self.refresh_incremental_filings,
                 "cron",
                 day_of_week="mon-fri",
                 hour="8-21",
                 minute=0,
                 timezone=self.NYC,
-                id="sync_filings_disclosures",
+                id="sync_filings_disclosures_hourly",
                 next_run_time=datetime.now(self.NYC),
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
+            self.scheduler.add_job(
+                self.sync_risk_taxonomy,
+                "cron",
+                day_of_week="mon-fri",
+                hour=21,
+                minute=30,
+                timezone=self.NYC,
+                id="sync_risk_taxonomy_daily",
                 max_instances=1,
                 coalesce=True,
                 replace_existing=True,
@@ -39,6 +51,15 @@ class MassiveFilingsDisclosuresScraper:
             logger.info("✅ Massive Filings & Disclosures 搜刮器已启动")
 
     def stop(self):
+        if self.scheduler:
+            try:
+                self.scheduler.remove_job("sync_filings_disclosures_hourly")
+            except Exception:
+                pass
+            try:
+                self.scheduler.remove_job("sync_risk_taxonomy_daily")
+            except Exception:
+                pass
         logger.info("🛑 Massive Filings & Disclosures 搜刮器停止。")
 
     def sync_10k_sections(self):
@@ -65,6 +86,16 @@ class MassiveFilingsDisclosuresScraper:
         
         clean_df = UsStock10kSectionsRawModel.format_dataframe(df_raw)
         if not clean_df.empty:
+            before = len(clean_df)
+            clean_df = clean_df[
+                (clean_df["ticker"].astype(str).str.len() > 0)
+                & (clean_df["section"].astype(str).str.len() > 0)
+            ]
+            clean_df = clean_df.dropna(subset=["filing_date", "period_end"])
+            dropped = before - len(clean_df)
+            if dropped > 0:
+                logger.warning(f"⚠️ 10-K Sections 清洗后丢弃 {dropped} 条异常记录。")
+        if not clean_df.empty:
             self.fundamental_repo.insert_stock_10k_sections_raw(clean_df)
         logger.info(f"10-K Sections 数据拉取完成，新增 {len(clean_df)} 条记录。")
 
@@ -90,6 +121,16 @@ class MassiveFilingsDisclosuresScraper:
         
         clean_df = UsStockRiskFactorsModel.format_dataframe(df_raw)
         if not clean_df.empty:
+            before = len(clean_df)
+            clean_df = clean_df[
+                (clean_df["ticker"].astype(str).str.len() > 0)
+                & (clean_df["primary_category"].astype(str).str.len() > 0)
+            ]
+            clean_df = clean_df.dropna(subset=["filing_date"])
+            dropped = before - len(clean_df)
+            if dropped > 0:
+                logger.warning(f"⚠️ Risk Factors 清洗后丢弃 {dropped} 条异常记录。")
+        if not clean_df.empty:
             self.fundamental_repo.insert_stock_risk_factors(clean_df)
         logger.info(f"Risk Factors 数据拉取完成，新增 {len(clean_df)} 条记录。")
 
@@ -103,12 +144,23 @@ class MassiveFilingsDisclosuresScraper:
 
         clean_df = UsStockRiskTaxonomyModel.format_dataframe(df_raw)
         if not clean_df.empty:
+            before = len(clean_df)
+            clean_df = clean_df[
+                clean_df["primary_category"].astype(str).str.len() > 0
+            ]
+            dropped = before - len(clean_df)
+            if dropped > 0:
+                logger.warning(f"⚠️ Risk Taxonomy 清洗后丢弃 {dropped} 条异常记录。")
+        if not clean_df.empty:
             self.fundamental_repo.insert_stock_risk_taxonomy(clean_df)
         logger.info(f"Risk Taxonomy 数据拉取完成，更新了 {len(clean_df)} 条记录。")
 
-    def refresh_all(self):
+    def refresh_incremental_filings(self):
         self.sync_10k_sections()
         self.sync_risk_factors()
+
+    def refresh_all(self):
+        self.refresh_incremental_filings()
         self.sync_risk_taxonomy()
 
 

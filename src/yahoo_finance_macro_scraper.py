@@ -28,6 +28,9 @@ class YahooMacroScraper:
         PIT Note: Yahoo returns adjusted close by default in recent yfinance versions.
         """
         app_logger.info(f"📡 正在拉取 Yahoo 宏观资产日线 (Since {start_date})...")
+        inserted_rows = 0
+        inserted_symbols = 0
+        failed_symbols = 0
 
         for yf_symbol, internal_code in self.tickers.items():
             try:
@@ -78,11 +81,17 @@ class YahooMacroScraper:
                 )
                 if not clean_df.empty:
                     self.repo.insert_macro_daily_klines(clean_df)
-                    app_logger.info(
+                    inserted_rows += len(clean_df)
+                    inserted_symbols += 1
+                    app_logger.debug(
                         f"✅ Yahoo: {internal_code} 同步完成 ({len(clean_df)} 行)。"
                     )
             except Exception as e:
+                failed_symbols += 1
                 app_logger.error(f"处理 Yahoo 标的 {yf_symbol} 失败: {e}")
+        app_logger.info(
+            f"✅ Yahoo 本轮完成: 成功标的={inserted_symbols} 失败标的={failed_symbols} 新增行数={inserted_rows}"
+        )
 
     def _initial_sync(self) -> None:
         last_date_str = self.repo.get_latest_trade_date_in_macro_daily_klines(
@@ -109,6 +118,19 @@ class YahooMacroScraper:
             misfire_grace_time=24 * 3600,
             next_run_time=datetime.now(self.NYC),
         )
+        # 次日早晨补采一次，覆盖交易所迟到修正
+        self.scheduler.add_job(
+            self._initial_sync,
+            "cron",
+            hour=7,
+            minute=0,
+            timezone=self.NYC,
+            id="daily_yahoo_macro_recheck",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+            misfire_grace_time=24 * 3600,
+        )
 
     def stop(self):
         if self.scheduler:
@@ -118,6 +140,10 @@ class YahooMacroScraper:
                 pass
             try:
                 self.scheduler.remove_job("initial_yahoo_macro_sync")
+            except Exception:
+                pass
+            try:
+                self.scheduler.remove_job("daily_yahoo_macro_recheck")
             except Exception:
                 pass
         app_logger.info("🛑 Yahoo 宏观搜刮器停止。")

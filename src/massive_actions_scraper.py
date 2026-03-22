@@ -13,7 +13,8 @@ Massive 公司行动搜刮器 (MassiveActionsScraper)
 3. 数据一致性:
    - 依赖 Massive 提供的 unique 'id' 字段作为主键去重。
 4. 调度周期:
-   - 每日 20:30 NYC 执行。
+   - 当前: 交易日每 2 小时执行一次 + 收盘后回补（启动立即触发）。
+   - 建议: 公司行动可采用 1-4 小时轮询 + 每日收盘后一次补采。
 ================================================================================
 """
 
@@ -46,7 +47,7 @@ class MassiveActionsScraper:
             self.scheduler.add_job(
                 self.refresh_recent_actions,
                 "cron",
-                hour="*/1",
+                hour="*/2",
                 minute=0,
                 day_of_week="mon-fri",
                 timezone=self.NYC,
@@ -56,9 +57,30 @@ class MassiveActionsScraper:
                 coalesce=True,  # 防止积压多批次
                 replace_existing=True,
             )
+            self.scheduler.add_job(
+                self.refresh_recent_actions,
+                "cron",
+                hour=20,
+                minute=30,
+                day_of_week="mon-fri",
+                timezone=self.NYC,
+                id="rolling_actions_close_backfill",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
             logger.info("✅ Massive 公司行动搜刮器已启动 (单日回刷3天模式)。")
 
     def stop(self):
+        if self.scheduler:
+            try:
+                self.scheduler.remove_job("rolling_actions_refresh")
+            except Exception:
+                pass
+            try:
+                self.scheduler.remove_job("rolling_actions_close_backfill")
+            except Exception:
+                pass
         logger.info("🛑 Massive 公司行动搜刮器停止。")
 
     def fetch_dividends(self):
@@ -69,13 +91,13 @@ class MassiveActionsScraper:
 
         date_str = last_date.strftime("%Y-%m-%d")
 
-        logger.info(f"🚀 拉取派息数据 (起: {date_str})...")
+        logger.debug(f"拉取派息数据 (起: {date_str})...")
         df_raw = self.massive.get_dividends(
             ex_dividend_date=date_str, limit=self.MASSIVE_API_ACTIONS_LIMIT
         )
 
         if df_raw is None or df_raw.empty:
-            logger.info("派息数据无新增。")
+            logger.debug("派息数据无新增。")
             return
 
         if "ticker" not in df_raw.columns:
@@ -87,8 +109,19 @@ class MassiveActionsScraper:
 
         clean_df = UsStockDividendsModel.format_dataframe(df_raw)
         if not clean_df.empty:
+            before = len(clean_df)
+            clean_df = clean_df[
+                (clean_df["id"].astype(str).str.len() > 0)
+                & (clean_df["ticker"].astype(str).str.len() > 0)
+            ]
+            clean_df = clean_df.dropna(subset=["ex_dividend_date"])
+            clean_df = clean_df.drop_duplicates(subset=["id", "ticker"], keep="last")
+            dropped = before - len(clean_df)
+            if dropped > 0:
+                logger.warning(f"⚠️ 派息数据清洗后丢弃 {dropped} 条脏/重复记录。")
+        if not clean_df.empty:
             self.fundamental_repo.insert_stock_dividends(clean_df)
-        logger.info(f"派息数据拉取完成，新增 {len(clean_df)} 条记录。")
+        logger.debug(f"派息数据拉取完成，新增 {len(clean_df)} 条记录。")
 
     def fetch_splits(self):
         last_date = self.fundamental_repo.get_global_latest_stock_splits_date()
@@ -98,13 +131,13 @@ class MassiveActionsScraper:
 
         date_str = last_date.strftime("%Y-%m-%d")
 
-        logger.info(f"🚀 拉取股票拆分数据 (起: {date_str})...")
+        logger.debug(f"拉取股票拆分数据 (起: {date_str})...")
         df_raw = self.massive.get_splits(
             ticker=None, execution_date=date_str, limit=self.MASSIVE_API_ACTIONS_LIMIT
         )
 
         if df_raw is None or df_raw.empty:
-            logger.info("拆分数据无新增。")
+            logger.debug("拆分数据无新增。")
             return
 
         if "ticker" not in df_raw.columns:
@@ -116,12 +149,31 @@ class MassiveActionsScraper:
 
         clean_df = UsStockSplitsModel.format_dataframe(df_raw)
         if not clean_df.empty:
+            before = len(clean_df)
+            clean_df = clean_df[
+                (clean_df["id"].astype(str).str.len() > 0)
+                & (clean_df["ticker"].astype(str).str.len() > 0)
+            ]
+            clean_df = clean_df.dropna(subset=["execution_date"])
+            clean_df = clean_df.drop_duplicates(subset=["id", "ticker"], keep="last")
+            dropped = before - len(clean_df)
+            if dropped > 0:
+                logger.warning(f"⚠️ 拆分数据清洗后丢弃 {dropped} 条脏/重复记录。")
+        if not clean_df.empty:
             self.fundamental_repo.insert_stock_splits(clean_df)
-        logger.info(f"股票拆分数据拉取完成，新增 {len(clean_df)} 条记录。")
+        logger.debug(f"股票拆分数据拉取完成，新增 {len(clean_df)} 条记录。")
 
     def refresh_recent_actions(self):
+        div_before = self.fundamental_repo.get_global_latest_stock_dividends_date()
+        split_before = self.fundamental_repo.get_global_latest_stock_splits_date()
         self.fetch_dividends()
         self.fetch_splits()
+        div_after = self.fundamental_repo.get_global_latest_stock_dividends_date()
+        split_after = self.fundamental_repo.get_global_latest_stock_splits_date()
+        logger.info(
+            f"✅ Massive Actions 本轮完成: dividends {div_before} -> {div_after}, "
+            f"splits {split_before} -> {split_after}"
+        )
 
 
 if __name__ == "__main__":

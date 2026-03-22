@@ -16,7 +16,8 @@ Massive 新闻原始搜刮器 (MassiveNewsScraper) - 需求与逻辑文档
    - 始终通过 UsStockNewsRawModel 进行数据清洗与 figi 对齐。
    - 对退市标的新闻执行严格时间截断。
 4. 调度周期:
-   - 每日 20:00 NYC 执行。
+   - 当前: 每 5 分钟执行一次（启动立即触发）。
+   - 建议: 新闻类事件 24/7 到达，保持 5 分钟频率；若需降本可改为盘中 5 分钟 + 非盘中 15 分钟。
 ================================================================================
 """
 
@@ -70,10 +71,11 @@ class MassiveNewsScraper:
             last_ts = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d")
             logger.info(f"新闻初次同步，使用冷启动存量日期: {self.COLD_START_DATE}")
 
-        logger.info(f"最新新闻时间戳: {last_ts}")
+        logger.debug(f"新闻增量起点: {last_ts}")
         if not isinstance(last_ts, pd.Timestamp):
             last_ts = pd.Timestamp(last_ts)
         ts = last_ts.tz_convert("UTC") if last_ts.tzinfo else last_ts.tz_localize("UTC")
+        # 必须使用 gte：当单次返回不足覆盖同一时间戳下的所有新闻时，gt 会造成漏数。
         date_raw = self.massive.get_stock_news(
             published_utc_type="published_utc.gte", date=ts.isoformat()
         )
@@ -113,4 +115,18 @@ class MassiveNewsScraper:
 
         data = UsStockNewsRawModel.format_dataframe(date_raw)
         if not data.empty:
+            before = len(data)
+            data = data.dropna(subset=["published_utc"])
+            data = data[
+                (data["news_id"].astype(str).str.len() > 0)
+                & (data["ticker"].astype(str).str.len() > 0)
+            ]
+            data = data.drop_duplicates(
+                subset=["news_id", "ticker", "published_utc"], keep="last"
+            )
+            dropped = before - len(data)
+            if dropped > 0:
+                logger.warning(f"⚠️ 新闻数据清洗后丢弃 {dropped} 条脏/重复记录。")
+        if not data.empty:
             self.fundamental_repo.insert_stock_news_raw(data)
+            logger.info(f"✅ 新闻增量入库完成，新增 {len(data)} 条。")

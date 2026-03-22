@@ -93,11 +93,14 @@ class ForexFactoryScraper:
 
         now = datetime.now(ZoneInfo("UTC"))
         current = start_dt.replace(day=1)  # 从该月 1 号开始补
+        total_months = 0
+        inserted_rows = 0
 
         while current <= now:
             month_label = current.strftime("%b").lower()
             year = current.year
-            app_logger.info(f"📅 ForexFactory: 正在补齐月份: {year}-{month_label}")
+            app_logger.debug(f"📅 ForexFactory: 正在补齐月份: {year}-{month_label}")
+            total_months += 1
 
             try:
                 df_raw = scrape_month(month_label, year)
@@ -108,7 +111,8 @@ class ForexFactoryScraper:
                         # Model -> DF -> Repo
                         clean_df = UsMacroIndicatorsModel.format_dataframe(df_processed)
                         self.repo.insert_macro_indicators(clean_df)
-                        app_logger.info(
+                        inserted_rows += len(clean_df)
+                        app_logger.debug(
                             f"✅ ForexFactory: {year}-{month_label} 入库 {len(clean_df)} 行"
                         )
             except Exception as e:
@@ -120,15 +124,18 @@ class ForexFactoryScraper:
             else:
                 current = current.replace(month=current.month + 1)
             time.sleep(1)
+        app_logger.info(
+            f"✅ ForexFactory 本轮完成: 扫描月份={total_months} 新增行数={inserted_rows}"
+        )
 
     def start(self):
         app_logger.info("✅ ForexFactory 宏观日历搜刮器激活。")
 
-        # 每日 21:00 NYC 更新当月最新数值，启动时立即执行一次
+        # 交易日 00:00-23:59 每 15 分钟更新一次，启动时立即执行一次
         self.scheduler.add_job(
             self.sync_history,  # 直接复用历史同步逻辑即可补齐当月
             "cron",
-            hour="8-20",
+            hour="0-23",
             minute="*/15",
             timezone=self.NYC,
             day_of_week="mon-fri",

@@ -11,7 +11,7 @@ Massive 基准 ETF 搜刮器 (MassiveBenchmarkScraper) - 需求与逻辑文档
 4. 逻辑特性:
    - 滚动重刷: 每天执行一次，强制回溯 3 天数据，确保数据一致性与修正。
    - 原始存储: 强制使用 `adjusted=false`，确保底层数据的物理纯洁性。
-   - 调度: 每日 20:00 NYC 执行同步。
+   - 当前调度: 交易日 10:00-16:59 每 5 分钟同步 + 18:30 收盘后回补。
 ================================================================================
 """
 
@@ -52,6 +52,18 @@ class MassiveBenchmarkScraper:
                 next_run_time=datetime.now(self.NYC),  # 启动时立即执行一次
                 max_instances=1,  # 只允许一个实例，前一个没跑完则跳过新触发
                 coalesce=True,  # 触发积压时合并为一次执行
+                replace_existing=True,
+            )
+            self.scheduler.add_job(
+                self.fetch_benchmark_etf_klines,
+                "cron",
+                hour=18,
+                minute=30,
+                day_of_week="mon-fri",
+                timezone=self.NYC,
+                id="fetch_benchmark_etf_klines_close_backfill",
+                max_instances=1,
+                coalesce=True,
                 replace_existing=True,
             )
 
@@ -104,4 +116,13 @@ class MassiveBenchmarkScraper:
                 logger.error(f"❌ 同步基准 {ticker} 失败: {e}")
 
     def stop(self):
+        if self.scheduler:
+            try:
+                self.scheduler.remove_job("fetch_benchmark_etf_klines")
+            except Exception:
+                pass
+            try:
+                self.scheduler.remove_job("fetch_benchmark_etf_klines_close_backfill")
+            except Exception:
+                pass
         logger.info("🛑 Massive 基准 ETF 搜刮器停止。")

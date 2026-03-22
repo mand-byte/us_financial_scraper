@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "apscheduler>=3.11.2",
     "clickhouse-connect>=0.14.1",
+    "curl-cffi>=0.13.0",
     "dotenv>=0.9.9",
     "fredapi>=0.5.2",
     "google-genai>=1.67.0",
@@ -21,4 +22,5 @@ dependencies = [
     "lxml>=6.0.2",
     "sec-edgar-downloader>=5.1.0",
     "beautifulsoup4>=4.14.3",
+    "websockets>=15.0.1",
 ]

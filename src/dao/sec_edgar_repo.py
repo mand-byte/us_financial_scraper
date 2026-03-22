@@ -31,6 +31,26 @@ class SecEdgarRepo:
 
         try:
             formatted_df = model_cls.format_dataframe(df)
+            if formatted_df.empty:
+                return
+            before = len(formatted_df)
+            formatted_df = formatted_df[
+                (formatted_df["issuer_cik"].astype(str).str.len() > 0)
+                & (formatted_df["accession_number"].astype(str).str.len() > 0)
+            ]
+            if "acceptance_datetime" in formatted_df.columns:
+                adt = pd.to_datetime(
+                    formatted_df["acceptance_datetime"], errors="coerce", utc=True
+                )
+                formatted_df = formatted_df[adt.notna() & (adt.dt.year > 1971)]
+            if formatted_df.empty:
+                app_logger.warning(f"⚠️ {model_cls.table_name} 清洗后无可入库记录，已跳过。")
+                return
+            dropped = before - len(formatted_df)
+            if dropped > 0:
+                app_logger.warning(
+                    f"⚠️ {model_cls.table_name} 丢弃 {dropped} 条异常记录(空主键或非法 acceptance_datetime)。"
+                )
             self.db.insert_model_df(model_cls, formatted_df)
             app_logger.info(
                 f"💾 成功插入 {len(formatted_df)} 条记录至 {model_cls.table_name}"

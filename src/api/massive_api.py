@@ -1,15 +1,20 @@
-import requests
-import pandas as pd
-from typing import Optional, Callable, List
-from src.utils.logger import app_logger
 import asyncio
-from .massive_wss_client import MassiveWssClient
 import threading
+from typing import Callable, List, Optional
+
+import pandas as pd
+import requests
+
+from .massive_wss_client import MassiveWssClient
 from src.config.settings import settings
+from src.utils.logger import app_logger
 
 
 # 在数据清晰中，要考虑一个cik应对多个ticker的情况，比如google和Berkshire Hathaway
 class MassiveApi:
+    REQUEST_TIMEOUT_SECONDS = (5, 30)
+    MAX_PAGES_PER_REQUEST = 5000
+
     def __init__(self):
         self.api_key = settings.api.massive_api_key
         self.base_url = "https://api.massive.com"
@@ -37,10 +42,19 @@ class MassiveApi:
 
         try:
             if method.upper() == "GET":
-                response = self.session.get(url, headers=self.headers, params=params)
+                response = self.session.get(
+                    url,
+                    headers=self.headers,
+                    params=params,
+                    timeout=self.REQUEST_TIMEOUT_SECONDS,
+                )
             else:
                 response = self.session.request(
-                    method, url, headers=self.headers, json=params
+                    method,
+                    url,
+                    headers=self.headers,
+                    json=params,
+                    timeout=self.REQUEST_TIMEOUT_SECONDS,
                 )
 
             response.raise_for_status()
@@ -49,6 +63,46 @@ class MassiveApi:
         except requests.RequestException as e:
             app_logger.error(f"请求 Massive API 失败: {e}")
             raise
+
+    def _collect_paginated_results(
+        self, endpoint: str, params: Optional[dict] = None
+    ) -> list[dict]:
+        all_results: list[dict] = []
+        result_limit: Optional[int] = None
+        if params and params.get("limit") is not None:
+            try:
+                result_limit = max(1, int(params["limit"]))
+            except (TypeError, ValueError):
+                result_limit = None
+
+        data_ = self.request("GET", endpoint, params)
+        pages = 0
+        seen_next_urls: set[str] = set()
+
+        while True:
+            pages += 1
+            all_results.extend(data_.get("results", []))
+            if result_limit is not None and len(all_results) >= result_limit:
+                # 保护策略：达到本轮 limit 后立即返回，剩余分页留给下次调度
+                app_logger.debug(
+                    f"Massive API 达到本轮 limit={result_limit}，提前结束分页。"
+                )
+                return all_results[:result_limit]
+            next_url = data_.get("next_url")
+            if not next_url:
+                break
+            if next_url in seen_next_urls:
+                app_logger.warning(f"Massive API next_url 重复，提前停止分页: {next_url}")
+                break
+            if pages >= self.MAX_PAGES_PER_REQUEST:
+                app_logger.warning(
+                    f"Massive API 分页超过上限 {self.MAX_PAGES_PER_REQUEST}，提前停止以防失控。"
+                )
+                break
+            seen_next_urls.add(next_url)
+            data_ = self.request("GET", next_url)
+
+        return all_results
 
     # 这个逻辑要改，活跃的股票不止1000条。
     def get_all_tickers(
@@ -108,8 +162,7 @@ class MassiveApi:
             f"/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{start}/{end}"
         )
         try:
-            data_ = self.request(
-                "GET",
+            result_raw = self._collect_paginated_results(
                 endpoint,
                 {
                     "adjusted": "true" if adjusted else "false",
@@ -117,17 +170,6 @@ class MassiveApi:
                     "limit": limit,
                 },
             )
-            result_raw = []
-            while True:
-                # 立即产出当前页数据，让调用方写入并清理内存
-                result_raw.extend(data_.get("results", []))
-                if len(result_raw) >= limit:
-                    break
-                next_url = data_.get("next_url")
-                if next_url:
-                    data_ = self.request("GET", next_url)
-                else:
-                    break
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(f"抓取历史K线失败 [ticker: {ticker}]: {e}")
@@ -162,11 +204,7 @@ class MassiveApi:
         }
         clean_params = {k: v for k, v in raw_params.items() if v}
         try:
-            data_ = self.request("GET", endpoint, clean_params)
-            result_raw = []
-
-            results = data_.get("results", [])
-            result_raw.extend(results)
+            result_raw = self._collect_paginated_results(endpoint, clean_params)
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(f"抓取新闻数据失败 [date: {date}]: {e}")
@@ -205,11 +243,7 @@ class MassiveApi:
         if ticker:
             params["ticker"] = ticker
         try:
-            data_ = self.request("GET", endpoint, params)
-            result_raw = []
-
-            result_raw.extend(data_.get("results", []))
-
+            result_raw = self._collect_paginated_results(endpoint, params)
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(
@@ -227,11 +261,7 @@ class MassiveApi:
             "limit": limit,
         }
         try:
-            data_ = self.request("GET", endpoint, params)
-            result_raw = []
-
-            result_raw.extend(data_.get("results", []))
-
+            result_raw = self._collect_paginated_results(endpoint, params)
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(
@@ -256,11 +286,7 @@ class MassiveApi:
             "sort": sort,
         }
         try:
-            data_ = self.request("GET", endpoint, params)
-            result_raw = []
-
-            result_raw.extend(data_.get("results", []))
-
+            result_raw = self._collect_paginated_results(endpoint, params)
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(
@@ -285,11 +311,7 @@ class MassiveApi:
             "sort": sort,
         }
         try:
-            data_ = self.request("GET", endpoint, params)
-            result_raw = []
-
-            result_raw.extend(data_.get("results", []))
-
+            result_raw = self._collect_paginated_results(endpoint, params)
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(
@@ -309,11 +331,7 @@ class MassiveApi:
             "sort": sort,
         }
         try:
-            data_ = self.request("GET", endpoint, params)
-            result_raw = []
-
-            result_raw.extend(data_.get("results", []))
-
+            result_raw = self._collect_paginated_results(endpoint, params)
             return pd.DataFrame(result_raw)
         except Exception as e:
             app_logger.error(f"抓取 Risk Taxonomy 数据失败: {e}")

@@ -16,7 +16,7 @@ Massive K线搜刮器 (MassiveDataFetcher) - 需求与逻辑文档
    - 包含盘前与盘后数据。
 4. 调度任务:
    - 宇宙表同步: 美东 01:00 和 09:00。
-   - K线同步: 美东 19:00 (每日增量)。
+   - K线同步: 交易日 10:00-16:59 每 5 分钟增量同步（盘中高频）+ 18:30 收盘后回补。
 ================================================================================
 """
 
@@ -80,7 +80,7 @@ class MassiveKlineScraper:
 
     def start(self):
         """异步注册与高频调度启动"""
-        # 1. 宇宙表高频同步 (美东 01:00 和 09:00, 周一至周五)
+        # 1. 宇宙表同步 (美东 01:00 和 09:00, 周一至周五)
 
         self.scheduler.add_job(
             self.load_stock_universe,
@@ -109,6 +109,19 @@ class MassiveKlineScraper:
             coalesce=True,
             replace_existing=True,
         )
+        self.scheduler.add_job(
+            self.fetch_klines,
+            "cron",
+            hour=18,
+            minute=30,
+            timezone=self.NYC,
+            day_of_week="mon-fri",
+            id="fetch_klines_close_backfill",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+        # 盘中高频 + 收盘后回补，降低漏数风险。
 
         logger.info("✅ Massive K线搜刮器已启动。")
 
@@ -438,6 +451,10 @@ class MassiveKlineScraper:
                 pass
             try:
                 self.scheduler.remove_job("fetch_klines")
+            except Exception:
+                pass
+            try:
+                self.scheduler.remove_job("fetch_klines_close_backfill")
             except Exception:
                 pass
         logger.info("🛑 Massive K线搜刮器已停止。")

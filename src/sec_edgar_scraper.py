@@ -41,14 +41,16 @@ class SecEdgarScraper:
         form_type: str,
         start_date: str,
         end_date: str,
-    ) -> tuple[List[Dict[str, Any]], str]:
+    ) -> tuple[List[Dict[str, Any]], str, bool]:
         os.makedirs(self.download_dir, exist_ok=True)
 
         dl = Downloader(SEC_COMPANY_NAME, SEC_EMAIL, self.download_dir)
+        download_ok = True
         try:
             dl.get(form_type, ticker_or_cik, after=start_date, before=end_date)
         except Exception as e:
             app_logger.warning(f"下载 {ticker_or_cik} Form {form_type} 报错: {e}")
+            download_ok = False
 
         all_rows = []
         filing_dir = os.path.join(
@@ -56,7 +58,7 @@ class SecEdgarScraper:
         )
 
         if not os.path.exists(filing_dir):
-            return all_rows, self.download_dir
+            return all_rows, self.download_dir, download_ok
 
         for accn_dir in os.listdir(filing_dir):
             accn_path = os.path.join(filing_dir, accn_dir)
@@ -88,7 +90,7 @@ class SecEdgarScraper:
                 app_logger.warning(f"⚠️ 解析 {submission_file} 失败: {e}")
                 continue
 
-        return all_rows, self.download_dir
+        return all_rows, self.download_dir, download_ok
 
     def _sync_form_base(self, form_type: str, model_cls) -> None:
         table_name = model_cls.table_name
@@ -142,7 +144,7 @@ class SecEdgarScraper:
             end_str = now.strftime("%Y-%m-%d")
 
             try:
-                rows, _ = self._download_and_parse(
+                rows, _, download_ok = self._download_and_parse(
                     parser, cik, form_type, start_str, end_str
                 )
                 if rows:
@@ -154,7 +156,7 @@ class SecEdgarScraper:
                     all_rows.extend(rows)
 
                 # 当退市(active=0)时，视为已从头拉取完毕，插入 state 为 1
-                if active == 0:
+                if active == 0 and download_ok and (rows or (pd.notna(last_ts) and last_ts)):
                     self.market_repo.update_sync_status(
                         table_name, composite_figi, state=1
                     )
@@ -181,11 +183,12 @@ class SecEdgarScraper:
 
     def start(self):
         if self.scheduler:
-            # 启动时拉一次，之后星期1-星期5，每个小时拉取一次
+            # 启动时拉一次，之后星期1-星期5，06:00-22:59 每 30 分钟拉取一次
             self.scheduler.add_job(
                 self.sync_all_forms,
                 "cron",
-                minute=0,
+                hour="6-22",
+                minute="*/30",
                 id="sync_all_edgar_forms",
                 next_run_time=datetime.now(self.NYC),
                 max_instances=1,
@@ -194,7 +197,7 @@ class SecEdgarScraper:
                 day_of_week="mon-fri",
             )
             app_logger.info(
-                "✅ 已挂载 Form 3, 4, 5 的串行增量调度器 (每5分钟执行一轮)。"
+                "✅ 已挂载 Form 3, 4, 5 的串行增量调度器 (工作日 06:00-22:59 每 30 分钟执行一轮)。"
             )
 
     def stop(self):

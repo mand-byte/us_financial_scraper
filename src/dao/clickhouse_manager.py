@@ -47,7 +47,25 @@ class ClickHouseManager:
 
             def custom_insert_df(table, df, *args, **kwargs):
                 self._assert_circuit_closed("insert")
-                if df is not None and not df.empty and "update_time" in df.columns:
+                if df is None:
+                    app_logger.warning(f"⚠️ 跳过写入 {table}: 收到 None 数据。")
+                    return None
+                if not isinstance(df, pd.DataFrame):
+                    raise TypeError(
+                        f"写入 {table} 失败: 仅支持 pandas.DataFrame，收到 {type(df)}"
+                    )
+                if df.empty:
+                    return None
+                if df.columns.has_duplicates:
+                    raise ValueError(f"写入 {table} 失败: 存在重复列名 {list(df.columns)}")
+
+                # 防止全空行污染表
+                df = df.dropna(how="all")
+                if df.empty:
+                    app_logger.warning(f"⚠️ 跳过写入 {table}: 全部为空行。")
+                    return None
+
+                if "update_time" in df.columns:
                     if df["update_time"].isna().all():
                         df = df.drop(columns=["update_time"])
                 if "column_names" not in kwargs and df is not None:

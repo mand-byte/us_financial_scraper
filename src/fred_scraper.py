@@ -31,6 +31,9 @@ class FredScraper:
             return
 
         app_logger.info("🚀 启动 FRED 宏观指标增量同步...")
+        inserted_rows = 0
+        inserted_indicators = 0
+        failed_indicators = 0
         for fred_ticker, internal_code in self.indicators.items():
             try:
                 # 1. 获取库中最新时间戳
@@ -68,12 +71,18 @@ class FredScraper:
                     # 格式化并入库
                     clean_df = UsMacroIndicatorsModel.format_dataframe(pd.DataFrame(df))
                     self.repo.insert_macro_indicators(clean_df)
-                    app_logger.info(
+                    inserted_rows += len(clean_df)
+                    inserted_indicators += 1
+                    app_logger.debug(
                         f"✅ FRED: {internal_code} 同步完成 ({len(clean_df)} 条)。"
                     )
 
             except Exception as e:
+                failed_indicators += 1
                 app_logger.error(f"❌ FRED 同步 {internal_code} 失败: {e}")
+        app_logger.info(
+            f"✅ FRED 本轮完成: 成功指标={inserted_indicators} 失败指标={failed_indicators} 新增行数={inserted_rows}"
+        )
 
     def start(self):
         if not self.fred:

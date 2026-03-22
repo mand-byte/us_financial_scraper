@@ -1,4 +1,5 @@
 import re
+import os
 import logging
 import pandas as pd
 from zoneinfo import ZoneInfo
@@ -7,6 +8,12 @@ from bs4 import BeautifulSoup
 from curl_cffi import requests
 
 logger = logging.getLogger(__name__)
+_SAVE_DEBUG_HTML = os.getenv("FOREXFACTORY_SAVE_DEBUG_HTML", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def _get_session():
@@ -31,9 +38,12 @@ def scrape_month(month_str, year_int):
         response = session.get(url, timeout=30)
         response.raise_for_status()
 
-        # 调试：保存页面
-        with open("last_page_debug.html", "w", encoding="utf-8") as f:
-            f.write(response.text)
+        if _SAVE_DEBUG_HTML:
+            os.makedirs("logs", exist_ok=True)
+            with open(
+                "logs/forexfactory_last_page_debug.html", "w", encoding="utf-8"
+            ) as f:
+                f.write(response.text)
 
         return _parse_html(response.text, year_int)
     except Exception as e:
