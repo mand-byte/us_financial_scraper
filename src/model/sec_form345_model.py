@@ -7,7 +7,6 @@ def _get_sec_ddl(table_name):
     return f"""
         CREATE TABLE IF NOT EXISTS {table_name}
         (
-            figi                   String       COMMENT '发行人 FIGI (统一主键)',
             issuer_ticker          String       COMMENT '申报时使用的 ticker',
             issuer_cik             String       COMMENT '发行人 CIK',
             reporting_owner_name   String       COMMENT '内幕人姓名',
@@ -30,7 +29,7 @@ def _get_sec_ddl(table_name):
             form_type              String       COMMENT '3, 4, 或 5',
             update_time DateTime64(3, 'UTC') DEFAULT now64(3)
         ) ENGINE = ReplacingMergeTree(update_time)
-        ORDER BY (figi, reporting_owner_name, filing_date, transaction_date, transaction_code, transaction_shares)
+        ORDER BY (issuer_cik, issuer_ticker, acceptance_datetime, reporting_owner_name, filing_date, transaction_date, transaction_code, transaction_shares)
     """
 
 def _get_state_ddl(table_name):
@@ -43,10 +42,9 @@ def _get_state_ddl(table_name):
     """
 
 class _SecFormBase(BaseClickHouseModel):
-    QUERY_LATEST_TS_BY_FIGI_SQL: ClassVar[str] = "SELECT figi as composite_figi, max(acceptance_datetime) as last_ts FROM {table_name} GROUP BY figi"
+    QUERY_LATEST_TS_BY_CIK_SQL: ClassVar[str] = "SELECT issuer_cik as cik, max(acceptance_datetime) as last_ts FROM {table_name} GROUP BY issuer_cik"
     
     SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {
-        "figi": {"type": "str", "default": ""},
         "issuer_ticker": {"type": "str", "default": ""},
         "issuer_cik": {"type": "str", "default": ""},
         "reporting_owner_name": {"type": "str", "default": ""},
@@ -82,12 +80,29 @@ class _SecFormBase(BaseClickHouseModel):
         date_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "date"]
         for col in date_cols:
             if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
+                def _safe_date(v):
+                    if pd.isna(v) or v is None or str(v).strip() in ("", "None"):
+                        return pd.to_datetime("1970-01-01").date()
+                    try:
+                        return pd.to_datetime(v).date()
+                    except Exception:
+                        return pd.to_datetime("1970-01-01").date()
+                df[col] = df[col].apply(_safe_date)
 
         datetime_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "datetime64"]
         for col in datetime_cols:
             if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors="coerce")
+                def _safe_datetime(v):
+                    if pd.isna(v) or v is None or str(v).strip() in ("", "None"):
+                        return pd.to_datetime("1970-01-01 00:00:00").tz_localize("UTC")
+                    try:
+                        dt = pd.to_datetime(v)
+                        if dt.tzinfo is None:
+                            dt = dt.tz_localize("UTC")
+                        return dt
+                    except Exception:
+                        return pd.to_datetime("1970-01-01 00:00:00").tz_localize("UTC")
+                df[col] = df[col].apply(_safe_datetime)
 
         str_cols = {k: v.get("len") for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "str"}
         for col, length in str_cols.items():

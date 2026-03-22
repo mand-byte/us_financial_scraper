@@ -10,7 +10,6 @@ class UsStockDividendsModel(BaseClickHouseModel):
         (
             id String,
             ticker String,
-            composite_figi FixedString(12),
             ex_dividend_date Date,
             declaration_date Nullable(Date),
             record_date Nullable(Date),
@@ -24,13 +23,12 @@ class UsStockDividendsModel(BaseClickHouseModel):
             update_time DateTime64(3, 'UTC') DEFAULT now64(3)
         )
         ENGINE = ReplacingMergeTree(update_time)
-        ORDER BY (composite_figi, ex_dividend_date, id)
+        ORDER BY (ticker, ex_dividend_date, id)
     """
 
     SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {
         "id": {"type": "str"},
         "ticker": {"type": "str"},
-        "composite_figi": {"type": "str", "len": 12},
         "ex_dividend_date": {"type": "date"},
         "declaration_date": {"type": "date"},
         "record_date": {"type": "date"},

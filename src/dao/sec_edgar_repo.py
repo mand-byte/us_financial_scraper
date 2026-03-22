@@ -73,10 +73,10 @@ class SecEdgarRepo:
             return None
 
 
-    def get_latest_ts_df_by_figi(self, table_name: str) -> pd.DataFrame:
-        """获取按 FIGI 分组的最新时间戳"""
+    def get_latest_ts_df_by_cik(self, table_name: str) -> pd.DataFrame:
+        """获取按 CIK 分组的最新时间戳"""
         from src.model.sec_form345_model import _SecFormBase
-        sql = _SecFormBase.QUERY_LATEST_TS_BY_FIGI_SQL.format(table_name=table_name)
+        sql = _SecFormBase.QUERY_LATEST_TS_BY_CIK_SQL.format(table_name=table_name)
         try:
             return self.db.query_dataframe(sql)
         except Exception as e:

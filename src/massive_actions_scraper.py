@@ -85,51 +85,6 @@ class MassiveActionsScraper:
         if df_raw.empty:
             return
 
-        unique_tickers = df_raw["ticker"].unique().tolist()
-        mappings_df = self.market_repo.get_figi_mapping_history_by_tickers(
-            unique_tickers
-        )
-
-        if mappings_df.empty:
-            logger.info("无有效匹配 FIGI 的派息数据。")
-            return
-
-        mappings_df["date"] = pd.to_datetime(mappings_df["date"]).dt.tz_localize(None)
-        mappings_df = mappings_df.sort_values("date")
-
-        df_raw["ex_dividend_date_dt"] = pd.to_datetime(
-            df_raw["ex_dividend_date"]
-        ).dt.tz_localize(None)
-        df_raw = df_raw.sort_values("ex_dividend_date_dt")
-
-        df_raw = pd.merge_asof(
-            df_raw,
-            mappings_df[["ticker", "date", "composite_figi"]],
-            left_on="ex_dividend_date_dt",
-            right_on="date",
-            by="ticker",
-            direction="backward",
-        )
-
-        missing_mask = df_raw["composite_figi"].isna()
-        if missing_mask.any():
-            fallback_df = pd.merge_asof(
-                df_raw[missing_mask].drop(columns=["composite_figi", "date"]),
-                mappings_df[["ticker", "date", "composite_figi"]],
-                left_on="ex_dividend_date_dt",
-                right_on="date",
-                by="ticker",
-                direction="forward",
-            )
-            df_raw.loc[missing_mask, "composite_figi"] = fallback_df[
-                "composite_figi"
-            ].values
-
-        df_raw = df_raw.dropna(subset=["composite_figi"])
-        if df_raw.empty:
-            logger.info("无有效匹配 FIGI 的派息数据。")
-            return
-
         clean_df = UsStockDividendsModel.format_dataframe(df_raw)
         if not clean_df.empty:
             self.fundamental_repo.insert_stock_dividends(clean_df)
@@ -157,51 +112,6 @@ class MassiveActionsScraper:
 
         df_raw = df_raw.dropna(subset=["ticker"])
         if df_raw.empty:
-            return
-
-        unique_tickers = df_raw["ticker"].unique().tolist()
-        mappings_df = self.market_repo.get_figi_mapping_history_by_tickers(
-            unique_tickers
-        )
-
-        if mappings_df.empty:
-            logger.info("无有效匹配 FIGI 的拆分数据。")
-            return
-
-        mappings_df["date"] = pd.to_datetime(mappings_df["date"]).dt.tz_localize(None)
-        mappings_df = mappings_df.sort_values("date")
-
-        df_raw["execution_date_dt"] = pd.to_datetime(
-            df_raw["execution_date"]
-        ).dt.tz_localize(None)
-        df_raw = df_raw.sort_values("execution_date_dt")
-
-        df_raw = pd.merge_asof(
-            df_raw,
-            mappings_df[["ticker", "date", "composite_figi"]],
-            left_on="execution_date_dt",
-            right_on="date",
-            by="ticker",
-            direction="backward",
-        )
-
-        missing_mask = df_raw["composite_figi"].isna()
-        if missing_mask.any():
-            fallback_df = pd.merge_asof(
-                df_raw[missing_mask].drop(columns=["composite_figi", "date"]),
-                mappings_df[["ticker", "date", "composite_figi"]],
-                left_on="execution_date_dt",
-                right_on="date",
-                by="ticker",
-                direction="forward",
-            )
-            df_raw.loc[missing_mask, "composite_figi"] = fallback_df[
-                "composite_figi"
-            ].values
-
-        df_raw = df_raw.dropna(subset=["composite_figi"])
-        if df_raw.empty:
-            logger.info("无有效匹配 FIGI 的拆分数据。")
             return
 
         clean_df = UsStockSplitsModel.format_dataframe(df_raw)

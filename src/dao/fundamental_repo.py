@@ -97,9 +97,47 @@ class FundamentalRepo:
             self.db.client.insert_df("us_stock_10k_sections_raw", df)
         except Exception as e:
             app_logger.error(
-                f"{df.iloc[0]['cik']} 插入 us_stock_10k_sections_raw 失败: {e}"
+                f"插入 us_stock_10k_sections_raw 失败: {e}"
             )
             raise e
+
+    def insert_stock_risk_factors(self, df: pd.DataFrame):
+        try:
+            self.db.client.insert_df("us_stock_risk_factors", df)
+        except Exception as e:
+            app_logger.error(f"插入 us_stock_risk_factors 失败: {e}")
+            raise e
+
+    def insert_stock_risk_taxonomy(self, df: pd.DataFrame):
+        try:
+            self.db.client.insert_df("us_stock_risk_taxonomy", df)
+        except Exception as e:
+            app_logger.error(f"插入 us_stock_risk_taxonomy 失败: {e}")
+            raise e
+
+    def get_global_latest_10k_sections_date(self) -> date:
+        query = "SELECT max(filing_date) as last_date FROM us_stock_10k_sections_raw"
+        try:
+            res = self.db.client.query_df(query)
+            last_date = res.iloc[0]["last_date"]
+            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
+                return pd.to_datetime(last_date).date()
+            return None
+        except Exception as e:
+            app_logger.error(f"全局 10K 爬取时间查询失败: {e}")
+            return None
+
+    def get_global_latest_risk_factors_date(self) -> date:
+        query = "SELECT max(filing_date) as last_date FROM us_stock_risk_factors"
+        try:
+            res = self.db.client.query_df(query)
+            last_date = res.iloc[0]["last_date"]
+            if pd.notna(last_date) and pd.to_datetime(last_date).year > 1970:
+                return pd.to_datetime(last_date).date()
+            return None
+        except Exception as e:
+            app_logger.error(f"全局风险因素时间查询失败: {e}")
+            return None
 
     def get_latest_stock_earnings_raw_timestamp(self, cik: str) -> datetime:
         from src.model.us_stock_earnings_raw_model import UsStockEarningsRawModel

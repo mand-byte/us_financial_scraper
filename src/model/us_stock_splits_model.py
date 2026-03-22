@@ -10,7 +10,6 @@ class UsStockSplitsModel(BaseClickHouseModel):
         CREATE TABLE IF NOT EXISTS us_stock_splits
         (
             id String,
-            composite_figi FixedString(12),
             adjustment_type LowCardinality(String),
             ticker String,
             execution_date Date,
@@ -19,12 +18,11 @@ class UsStockSplitsModel(BaseClickHouseModel):
             split_to Float32,
             update_time DateTime64(3, 'UTC') DEFAULT now64(3)
         ) ENGINE = ReplacingMergeTree(update_time)
-        ORDER BY (composite_figi, execution_date, id)
+        ORDER BY (ticker, execution_date, id)
     """
 
     SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {
         "id": {"type": "str"},
-        "composite_figi": {"type": "str", "len": 12},
         "adjustment_type": {"type": "str"},
         "ticker": {"type": "str"},
         "execution_date": {"type": "date"},

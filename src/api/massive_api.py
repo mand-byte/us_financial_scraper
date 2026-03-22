@@ -121,6 +121,8 @@ class MassiveApi:
             while True:
                 # 立即产出当前页数据，让调用方写入并清理内存
                 result_raw.extend(data_.get("results", []))
+                if len(result_raw) >= limit:
+                    break
                 next_url = data_.get("next_url")
                 if next_url:
                     data_ = self.request("GET", next_url)
@@ -136,7 +138,7 @@ class MassiveApi:
         self,
         ticker: Optional[str] = None,
         # 支持参数为published_utc，published_utc.gte，published_utc.gt，published_utc.lte，published_utc.lt
-        published_utc_type: str = "published_utc.gt",
+        published_utc_type: str = "published_utc.gte",
         # 类型为string (date-time, date)
         date: str = "2016-6-22",
         order: str = "asc",
@@ -241,9 +243,9 @@ class MassiveApi:
 
     def get_stock_10k_sections(
         self,
-        period_end: str = "2000-01-01",
-        limit: int = 9999,
-        sort: str = "period_end.desc",
+        period_end_gte: str = "2000-01-01",
+        limit: int = 1000,
+        sort: str = "period_end.asc",
     ) -> pd.DataFrame:
         """
         Plain-text content of specific sections from SEC filings. Currently supports the Risk Factors and
@@ -251,6 +253,7 @@ class MassiveApi:
         """
         endpoint = "/stocks/filings/10-K/vX/sections"
         params = {
+            "period_end.gte": period_end_gte,
             "limit": limit,
             "sort": sort,
         }
@@ -270,7 +273,7 @@ class MassiveApi:
     def get_risk_factors(
         self,
         filing_date_gte: str = "2000-01-01",
-        limit: int = 49999,
+        limit: int = 1000,
         sort: str = "filing_date.asc",
     ) -> pd.DataFrame:
         """
@@ -297,7 +300,7 @@ class MassiveApi:
             return None
 
     def get_risk_taxonomy(
-        self, limit: int = 1000, sort: str = "taxonomy.desc"
+        self, limit: int = 999, sort: str = "taxonomy.desc"
     ) -> pd.DataFrame:
         """
         Retrieve the taxonomy for risk factors, providing descriptions for each category.

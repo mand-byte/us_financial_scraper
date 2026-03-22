@@ -17,8 +17,8 @@ NYC = ZoneInfo("America/New_York")
 
 
 class Form345Parser:
-    def __init__(self, cik_figi_map: Dict[str, str]):
-        self.cik_figi_map = cik_figi_map
+    def __init__(self):
+        pass
         
     def _get_zfilled_cik(self, cik: str) -> str:
         return str(cik).zfill(10)
@@ -38,11 +38,16 @@ class Form345Parser:
             return None
         end = content.find("</ownershipDocument>") + len("</ownershipDocument>")
         xml_content = content[start:end]
-        xml_content = re.sub(r"\n\s+", "", xml_content)
+        
+        from bs4 import BeautifulSoup
         try:
-            return ET.fromstring(xml_content)
-        except ET.ParseError as e:
-            app_logger.warning(f"⚠️ XML 解析失败: {e}")
+            # 采用 BeautifulSoup 修复可能存在的非法 SGML 实体和残缺标签
+            soup = BeautifulSoup(xml_content, "xml")
+            fixed_xml = str(soup)
+            # 交回给 ElementTree 进行后续提取，保持向下兼容
+            return ET.fromstring(fixed_xml)
+        except Exception as e:
+            app_logger.warning(f"⚠️ XML 修复或解析依然失败: {e}")
             return None
 
     def _get_text(self, el: ET.Element, tag: str) -> str:
@@ -98,8 +103,6 @@ class Form345Parser:
         issuer_ticker = self._get_text(issuer, "issuerTradingSymbol")
         filing_date = self._get_text(root, "periodOfReport")
 
-        figi = self.cik_figi_map.get(self._get_zfilled_cik(issuer_cik), "")
-
         owners = root.findall("reportingOwner")
         if not owners:
             return results
@@ -115,7 +118,6 @@ class Form345Parser:
             officer_title = self._get_text(owner_rel, "officerTitle")
 
             base = {
-                "figi": figi,
                 "issuer_ticker": issuer_ticker,
                 "issuer_cik": issuer_cik,
                 "reporting_owner_name": owner_name,

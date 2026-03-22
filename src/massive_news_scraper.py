@@ -77,7 +77,7 @@ class MassiveNewsScraper:
             last_ts = pd.Timestamp(last_ts)
         ts = last_ts.tz_convert("UTC") if last_ts.tzinfo else last_ts.tz_localize("UTC")
         date_raw = self.massive.get_stock_news(
-            published_utc_type="published_utc.gt", date=ts.isoformat()
+            published_utc_type="published_utc.gte", date=ts.isoformat()
         )
         if date_raw.empty:
             logger.info("无新增新闻。")
@@ -85,6 +85,11 @@ class MassiveNewsScraper:
 
         # API 返回的 news 数据中包含 tickers (列表)，id (新闻ID)，我们需要先展开 tickers
         if "tickers" in date_raw.columns:
+            # 过滤掉关联股票超过 5 只的大型盘点/宏观噪音新闻，保留高价值的个股强相关新闻
+            date_raw = date_raw[
+                date_raw["tickers"].apply(lambda x: isinstance(x, list) and len(x) <= 5)
+            ]
+            
             date_raw = (
                 date_raw.explode("tickers")
                 .rename(columns={"tickers": "ticker"})
@@ -98,60 +103,15 @@ class MassiveNewsScraper:
             logger.info("无有效 tickers 数据。")
             return
 
-        # 提取 unique tickers 用于查询映射
-        unique_tickers = date_raw["ticker"].unique().tolist()
-        mappings_df = self.market_repo.get_figi_mapping_history_by_tickers(
-            unique_tickers
-        )
-
-        if mappings_df.empty:
-            logger.info("无有效匹配 FIGI 历史映射的新闻。")
-            return
-
-        # 准备时间对齐: mappings_df 的 date 为精确到天
-        mappings_df["date"] = pd.to_datetime(mappings_df["date"]).dt.tz_localize(None)
-        mappings_df = mappings_df.sort_values("date")
-
-        # API 的 published_utc 是类似 '2024-03-12T15:20:00Z'
-        date_raw["published_utc_dt"] = pd.to_datetime(
-            date_raw["published_utc"], utc=True
-        ).dt.tz_localize(None)
-        date_raw = date_raw.sort_values("published_utc_dt")
-
-        # 进行 Point-in-Time 倒退匹配
-        date_raw = pd.merge_asof(
-            date_raw,
-            mappings_df[["ticker", "date", "composite_figi"]],
-            left_on="published_utc_dt",
-            right_on="date",
-            by="ticker",
-            direction="backward",
-        )
-
-        # 针对在首次有映射之前的新闻，启用向前匹配作为退路
-        missing_mask = date_raw["composite_figi"].isna()
-        if missing_mask.any():
-            fallback_df = pd.merge_asof(
-                date_raw[missing_mask].drop(columns=["composite_figi", "date"]),
-                mappings_df[["ticker", "date", "composite_figi"]],
-                left_on="published_utc_dt",
-                right_on="date",
-                by="ticker",
-                direction="forward",
-            )
-            date_raw.loc[missing_mask, "composite_figi"] = fallback_df[
-                "composite_figi"
-            ].values
-
-        date_raw = date_raw.dropna(subset=["composite_figi"])
-
-        if date_raw.empty:
-            logger.info("无有效匹配 FIGI 的新闻。")
-            return
-
         # 将 id 重命名为 news_id 用于数据库存储
         if "id" in date_raw.columns:
             date_raw = date_raw.rename(columns={"id": "news_id"})
+
+        # 解包 publisher 字典提取 name
+        if "publisher" in date_raw.columns:
+            date_raw["publisher"] = date_raw["publisher"].apply(
+                lambda x: x.get("name", "") if isinstance(x, dict) else str(x)
+            )
 
         data = UsStockNewsRawModel.format_dataframe(date_raw)
         if not data.empty:

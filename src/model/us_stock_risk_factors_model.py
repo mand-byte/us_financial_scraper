@@ -9,9 +9,8 @@ class UsStockRiskFactorsModel(BaseClickHouseModel):
     __DDL__: ClassVar[str] = """
             CREATE TABLE IF NOT EXISTS us_stock_risk_factors
             (
-                composite_figi FixedString(12),
                 cik Nullable(String),
-                ticker Nullable(String),
+                ticker String,
                 filing_date Date,
                 primary_category LowCardinality(String),
                 secondary_category LowCardinality(String),
@@ -19,11 +18,10 @@ class UsStockRiskFactorsModel(BaseClickHouseModel):
                 supporting_text String CODEC(ZSTD(3)),
                 update_time DateTime64(3, 'UTC') DEFAULT now64(3)
             ) ENGINE = ReplacingMergeTree(update_time)
-            ORDER BY (composite_figi, filing_date, primary_category)
+            ORDER BY (ticker, filing_date, primary_category)
         """
 
     SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {
-        "composite_figi": {"type": "str"},
         "cik": {"type": "str"},
         "ticker": {"type": "str"},
         "filing_date": {"type": "date"},

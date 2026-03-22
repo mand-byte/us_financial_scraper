@@ -11,12 +11,7 @@ _EXPORT_MAP = {
     "MassiveFundamentalsScraper": ("src.massive_fundamentals_scraper", "MassiveFundamentalsScraper"),
     "MassiveKlineScraper": ("src.massive_kline_scraper", "MassiveKlineScraper"),
     "MassiveNewsScraper": ("src.massive_news_scraper", "MassiveNewsScraper"),
-    "SecEdgarScraper": ("src.sec_edgar_scraper", "SecEdgarScraper"),
-    "CboeDataFetcher": ("src.cboe_scraper", "CboeScraper"),
-    "MassiveActionsFetcher": ("src.massive_actions_scraper", "MassiveActionsScraper"),
-    "MassiveDataFetcher": ("src.massive_kline_scraper", "MassiveKlineScraper"),
-    "MassiveFundamentalScraper": ("src.massive_fundamentals_scraper", "MassiveFundamentalsScraper"),
-    "MassiveNewsFetcher": ("src.massive_news_scraper", "MassiveNewsScraper"),
+    "SecEdgarScraper": ("src.sec_edgar_scraper", "SecEdgarScraper")
 }
 
 

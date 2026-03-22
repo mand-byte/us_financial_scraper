@@ -9,22 +9,28 @@ class UsStockNewsRawModel(BaseClickHouseModel):
     __DDL__: ClassVar[str] = """
             CREATE TABLE IF NOT EXISTS us_stock_news_raw
             (
-                news_id String,                          -- 建议用 URL 或 (标题+时间) 的 MD5 哈希
-                composite_figi FixedString(12),
+                news_id String,                          -- Massive API 返回的原始全局唯一事件 ID
+                ticker String,
                 published_utc DateTime64(3, 'UTC'),
                 title String CODEC(ZSTD(3)),             -- 长文本开启 ZSTD 高级压缩
                 description String CODEC(ZSTD(3)),
+                article_url String,
+                author String,
+                publisher String,
                 update_time DateTime64(3, 'UTC') DEFAULT now64(3)
             ) ENGINE = ReplacingMergeTree(update_time)
-            ORDER BY (composite_figi, published_utc, news_id)
+            ORDER BY (ticker, published_utc, news_id)
         """
 
     SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {
         "news_id": {"type": "str"},
-        "composite_figi": {"type": "str"},
+        "ticker": {"type": "str"},
         "published_utc": {"type": "datetime", "tz": "UTC"},
         "title": {"type": "str"},
         "description": {"type": "str"},
+        "article_url": {"type": "str"},
+        "author": {"type": "str"},
+        "publisher": {"type": "str"},
         "update_time": {"type": "datetime", "tz": "UTC"},
     }
     MAX_PUBLISHED_UTC_QUERY_SQL = (

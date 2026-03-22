@@ -14,18 +14,20 @@ from src.dao.market_data_repo import MarketDataRepo
 from src.utils.sec_edgar_parsers.form345_parser import Form345Parser
 
 from src.model.sec_form345_model import SecForm3Model, SecForm4Model, SecForm5Model
-
-SEC_COMPANY_NAME = os.getenv("SEC_DOWNLOADER_COMPANY", "QuantResearch")
-SEC_EMAIL = os.getenv("SEC_DOWNLOADER_EMAIL", "research@example.com")
+from zoneinfo import ZoneInfo
+SEC_COMPANY_NAME = os.getenv("SEC_DOWNLOADER_COMPANY", "QuantResearch").strip(' "\'“”')
+SEC_EMAIL = os.getenv("SEC_DOWNLOADER_EMAIL", "research@example.com").strip(' "\'“”')
 
 
 class SecEdgarScraper:
+    NYC = ZoneInfo("America/New_York")
     def __init__(self, scheduler=None):
         self.db_manager = ClickHouseManager()
         self.repo = SecEdgarRepo(self.db_manager)
         self.market_repo = MarketDataRepo()
         self.scheduler = scheduler
         self.download_dir = os.path.join(os.path.expanduser("~"), ".sec_edgar_cache")
+        
 
     def _download_and_parse(
         self, parser: Form345Parser, ticker_or_cik: str, form_type: str, start_date: str, end_date: str
@@ -91,24 +93,24 @@ class SecEdgarScraper:
         table_name = model_cls.table_name
         app_logger.info(f"🔍 [Form {form_type}] 启动增量拉取检测...")
 
-        # 每次调度实时从数据库获取映射，保持彻底无状态
-        cik_figi_map = self.market_repo.get_cik_to_figi_mapping()
-        parser = Form345Parser(cik_figi_map)
+        # 取消 FIGI 映射依赖，直接解析
+        parser = Form345Parser()
 
         tasks_df = self.market_repo.get_sync_tasks(table_name)
         if tasks_df.empty:
             app_logger.info(f"⏸️ 无 Form {form_type} 增量拉取任务。")
             return
 
-        latest_ts_df = self.repo.get_latest_ts_df_by_figi(table_name)
+        latest_ts_df = self.repo.get_latest_ts_df_by_cik(table_name)
         if latest_ts_df.empty:
             ts_map = {}
         else:
-            ts_map = dict(zip(latest_ts_df["composite_figi"], latest_ts_df["last_ts"]))
+            ts_map = dict(zip(latest_ts_df["cik"], latest_ts_df["last_ts"]))
 
         now = datetime.now(timezone.utc)
-        # 表里没记录时从头拉取
-        cold_start = datetime.strptime("2000-01-01", "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        # 表里没记录或错误记录 1970 时从配置拉取
+        start_date_env = os.getenv("SCRAPING_START_DATE", "2014-01-01")
+        cold_start = datetime.strptime(start_date_env, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
         all_rows = []
         for _, row in tasks_df.iterrows():
@@ -116,12 +118,16 @@ class SecEdgarScraper:
                 continue
 
             ticker = row["ticker"]
+            cik = row["cik"].decode("utf-8") if isinstance(row["cik"], bytes) else str(row["cik"])
             composite_figi = row["composite_figi"]
             active = row["active"]
             
-            last_ts = ts_map.get(composite_figi)
+            zfilled_cik = str(cik).zfill(10)
+            last_ts = ts_map.get(zfilled_cik)
             if pd.notna(last_ts) and last_ts:
                 start_dt = pd.to_datetime(last_ts).replace(tzinfo=timezone.utc)
+                if start_dt < cold_start:
+                    start_dt = cold_start
             else:
                 start_dt = cold_start
 
@@ -129,7 +135,7 @@ class SecEdgarScraper:
             end_str = now.strftime("%Y-%m-%d")
 
             try:
-                rows, _ = self._download_and_parse(parser, ticker, form_type, start_str, end_str)
+                rows, _ = self._download_and_parse(parser, cik, form_type, start_str, end_str)
                 if rows:
                     df = pd.DataFrame(rows)
                     self.repo.insert_records(model_cls, df)
@@ -149,19 +155,32 @@ class SecEdgarScraper:
 
         app_logger.info(f"✅ [Form {form_type}] 本轮全量迭代完成，累计获取 {len(all_rows)} 条记录")
 
+    def sync_all_forms(self):
+        try:
+            self.sync_form3()
+            self.sync_form4()
+            self.sync_form5()
+        except Exception as e:
+            app_logger.error(f"❌ 批量拉取 SEC Edgar 13F/3/4/5 表单发生异常: {e}")
+
     def start(self):
         if self.scheduler:
-            self.scheduler.add_job(self.sync_form3, "interval", minutes=5, id="sync_form3", replace_existing=True)
-            self.scheduler.add_job(self.sync_form4, "interval", minutes=5, id="sync_form4", replace_existing=True)
-            self.scheduler.add_job(self.sync_form5, "interval", minutes=5, id="sync_form5", replace_existing=True)
-            app_logger.info("✅ 已分别挂载 Form 3, 4, 5 的增量调度器 (每5分钟)。")
+            self.scheduler.add_job(
+                self.sync_all_forms, 
+                "interval", 
+                minutes=5, 
+                id="sync_all_edgar_forms", 
+                next_run_time=datetime.now(self.NYC),
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True
+            )
+            app_logger.info("✅ 已挂载 Form 3, 4, 5 的串行增量调度器 (每5分钟执行一轮)。")
 
     def stop(self):
         if hasattr(self, 'scheduler') and self.scheduler:
             try:
-                self.scheduler.remove_job("sync_form3")
-                self.scheduler.remove_job("sync_form4")
-                self.scheduler.remove_job("sync_form5")
+                self.scheduler.remove_job("sync_all_edgar_forms")
             except Exception:
                 pass
         app_logger.info("🛑 SEC EDGAR 搜刮器已停止。")

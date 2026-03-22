@@ -43,7 +43,7 @@ def scrape_month(month_str, year_int):
 
 def _parse_html(html_content, year):
     """使用 BeautifulSoup 解析 HTML，返回该月所有货币的所有指标"""
-    soup = BeautifulSoup(html_content, "html.parser")
+    soup = BeautifulSoup(html_content, "lxml")
     rows = soup.find_all("tr", class_="calendar__row")
 
     day_data = []

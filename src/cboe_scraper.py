@@ -41,6 +41,10 @@ class CboeScraper:
             minute=0,
             timezone=self.NYC,
             id="daily_vix_scraping",
+            next_run_time=datetime.now(self.NYC),
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
         )
         # 2. 启动同步
         self.scheduler.add_job(

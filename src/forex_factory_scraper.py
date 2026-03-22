@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from datetime import datetime
 
 from src.utils.logger import app_logger
-from src.utils.constants import ForexFactory_Indicator_Code
+from src.utils.constants import ForexFactory_Indicator_Title_Map
 from src.utils.forexfactory_scraper.scraper import scrape_month
 from src.dao.market_data_repo import MarketDataRepo
 from src.model.us_macro_indicators_model import UsMacroIndicatorsModel
@@ -16,16 +16,16 @@ class ForexFactoryScraper:
     NYC = ZoneInfo("America/New_York")
 
     def __init__(self, scheduler: BlockingScheduler):
-        self.indicators_map = ForexFactory_Indicator_Code
+        self.indicators_map = ForexFactory_Indicator_Title_Map
         self.scheduler = scheduler
         self.repo = MarketDataRepo()
         self.COLD_START_DATE = os.getenv("SCRAPING_START_DATE", "2014-01-01")
 
     def _clean_value(self, val_str):
-        """清洗数值字符串 (如 2.5%, 450K, 1.2M -> 2.5, 450000, 1200000)"""
+        """清洗数值字符串 (如 <0.25%, 2.5%, 450K, 1.2M -> 0.25, 2.5, 450000, 1200000)"""
         if not val_str or str(val_str).strip() == "":
             return None
-        clean_val = str(val_str).replace("%", "").replace(",", "").strip()
+        clean_val = str(val_str).replace("%", "").replace(",", "").replace("<", "").replace(">", "").strip()
         try:
             if clean_val.endswith("K"):
                 return float(clean_val[:-1]) * 1000
@@ -38,23 +38,26 @@ class ForexFactoryScraper:
             return None
 
     def process_scraped_data(self, df_scraped):
-        """清洗并准备入库 (基于 EventID 映射)"""
+        """清洗并准备入库 (基于 Title 映射)"""
         if df_scraped.empty:
             return pd.DataFrame()
 
         processed_list = []
         for _, row in df_scraped.iterrows():
-            eid = str(row["EventID"]) if row["EventID"] else None
-            if not eid or eid not in self.indicators_map:
+            if row.get("Currency") != "USD":
                 continue
-
             actual_val = self._clean_value(row["Actual"])
             forecast_val = self._clean_value(row["Forecast"])
-
+            title = str(row["Title"]).strip() if row.get("Title") else None
+            
+            if not title or title not in self.indicators_map:
+                continue
+            
+            
             processed_list.append(
                 {
                     "publish_timestamp": row["DateTime"],
-                    "indicator_code": self.indicators_map[eid],
+                    "indicator_code": self.indicators_map[title],
                     "actual_value": actual_val,
                     "expected_value": forecast_val,
                 }
@@ -85,6 +88,7 @@ class ForexFactoryScraper:
 
             try:
                 df_raw = scrape_month(month_label, year)
+                
                 if not df_raw.empty:
                     df_processed = self.process_scraped_data(df_raw)
                     if not df_processed.empty:

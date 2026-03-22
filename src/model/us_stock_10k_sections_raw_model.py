@@ -9,7 +9,7 @@ class UsStock10kSectionsRawModel(BaseClickHouseModel):
     __DDL__: ClassVar[str] = """
             CREATE TABLE IF NOT EXISTS us_stock_10k_sections_raw
             (
-                composite_figi FixedString(12),
+                ticker String,
                 cik Nullable(String),
                 filing_date Date,                         -- Date when the filing was submitted to the SEC (formatted as YYYY-MM-DD).
                 period_end Date,                         -- Period end date that the filing relates to (formatted as YYYY-MM-DD).
@@ -18,11 +18,12 @@ class UsStock10kSectionsRawModel(BaseClickHouseModel):
                 section String CODEC(ZSTD(3)),        -- Standardized section identifier from the filing (e.g. 'business', 'risk_factors', etc.).
                 update_time DateTime64(3, 'UTC') DEFAULT now64(3)
             ) ENGINE = ReplacingMergeTree(update_time)
-            ORDER BY (composite_figi, filing_date, section)
+            ORDER BY (ticker, filing_date, section)
         """
 
     SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {
-        "composite_figi": {"type": "str"},
+        "ticker": {"type": "str"},
+        "cik": {"type": "str"},
         "filing_date": {"type": "date"},
         "period_end": {"type": "date"},
         "filing_url": {"type": "str"},

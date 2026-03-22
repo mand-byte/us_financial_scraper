@@ -107,13 +107,13 @@ class GDELTScraper:
                         wide_record[f"tone_{code}"] = 0.0
                         wide_record[f"impact_{code}"] = 0.0
 
-            raw_df = pd.DataFrame([wide_record])
+                raw_df = pd.DataFrame([wide_record])
 
-            to_save = GdeltMacroSentimentModel.format_dataframe(
-                raw_df
-            )  # 验证数据结构正确性
+                to_save = GdeltMacroSentimentModel.format_dataframe(
+                    raw_df
+                )  # 验证数据结构正确性
 
-            SentimentRepo().insert_gdelt_macro_sentiment(to_save)
+                SentimentRepo().insert_gdelt_macro_sentiment(to_save)
 
             return 1
 

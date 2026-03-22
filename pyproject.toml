@@ -17,5 +17,8 @@ dependencies = [
     "pytest>=8.0.0",
     "ruff>=0.9.0",
     "loguru>=0.7.3",
-    "pandas-market-calendars>=4.6.0"
+    "pandas-market-calendars>=4.6.0",
+    "lxml>=6.0.2",
+    "sec-edgar-downloader>=5.1.0",
+    "beautifulsoup4>=4.14.3",
 ]

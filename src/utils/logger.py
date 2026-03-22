@@ -41,21 +41,10 @@ def setup_logger():
     # 自动归档压缩，保留 30 天
     log_file_path = os.path.join(log_dir, "quant_bot_{time:YYYY-MM-DD}.log")
 
-    def rotation_should_occur(message, file_path):
-        from datetime import datetime
-        import os
-
-        path_str = str(file_path)
-        file_size = os.path.getsize(path_str) if os.path.exists(path_str) else 0
-        should_rotate_by_size = file_size >= 100 * 1024 * 1024  # 100 MB
-        current_hour = datetime.now().hour
-        should_rotate_by_time = current_hour == 0
-        return should_rotate_by_size or should_rotate_by_time
-
     logger.add(
         log_file_path,
         level=FILE_LEVEL,
-        rotation=rotation_should_occur,
+        rotation="00:00",
         retention="30 days",
         compression="zip",
         encoding="utf-8",

@@ -41,34 +41,32 @@ CBOE_Indicator_Code = {
     'VX1': 'VX1',       # 近月连续合约 (Front-Month)
     'VX2': 'VX2',       # 次月连续合约 (Next-Month)
 }
-# ForexFactory 映射 (基于稳定不变的 EventID)
-# 格式: { 'EventID': 'INTERNAL_CODE' }
-# 这种方式比基于 Title 映射更稳健，防止 FF 更改指标名称（如大小写、空格或微调名称）
-ForexFactory_Indicator_Code = {
+# ForexFactory 映射 (基于事件标题 Title)
+# EventID 实际上会随具体实例(每月)变更，因此针对历史数据回溯回使用 Currency + Title 进行精确匹配。
+ForexFactory_Indicator_Title_Map = {
     # --- 1. 流动性事件 ---
-    '136006': 'FED_RATE_DECISION',       # Federal Funds Rate (利率决议)
-    '136007': 'FED_RATE_DECISION',       # 补充 ID (有时不同年份 ID 会变，但概率低)
+    'Federal Funds Rate': 'FED_RATE_DECISION',
     
     # --- 2. 通胀与消费事件 ---
-    '136037': 'US_CPI_MOM',              # CPI m/m
-    '136044': 'US_CPI_YOY',              # CPI y/y
-    '136038': 'US_CORE_CPI_MOM',         # Core CPI m/m
-    '136174': 'US_CORE_PCE_MOM',         # Core PCE Price Index m/m
-    '136013': 'US_PPI_MOM',              # PPI m/m
-    '136016': 'US_CORE_PPI_MOM',         # Core PPI m/m
-    '136148': 'US_RETAIL_SALES',         # Retail Sales m/m
-    '136149': 'US_CORE_RETAIL_SALES',    # Core Retail Sales m/m
+    'CPI m/m': 'US_CPI_MOM',
+    'CPI y/y': 'US_CPI_YOY',
+    'Core CPI m/m': 'US_CORE_CPI_MOM',
+    'Core PCE Price Index m/m': 'US_CORE_PCE_MOM',
+    'PPI m/m': 'US_PPI_MOM',
+    'Core PPI m/m': 'US_CORE_PPI_MOM',
+    'Retail Sales m/m': 'US_RETAIL_SALES',
+    'Core Retail Sales m/m': 'US_CORE_RETAIL_SALES',
     
     # --- 3. 就业与景气度事件 ---
-    '135978': 'US_NFP',                  # Non-Farm Employment Change
-    '135979': 'US_UNEMPLOYMENT_RATE',    # Unemployment Rate
-    '135980': 'US_AVG_EARNINGS',         # Average Hourly Earnings m/m
-    '136532': 'US_INITIAL_CLAIMS',       # Unemployment Claims (初请)
-    '136533': 'US_INITIAL_CLAIMS',       # 补充 ID
-    '136588': 'US_ISM_MFG_PMI',          # ISM Manufacturing PMI
-    '136612': 'US_ISM_SERVICES_PMI',     # ISM Services PMI
+    'Non-Farm Employment Change': 'US_NFP',
+    'Unemployment Rate': 'US_UNEMPLOYMENT_RATE',
+    'Average Hourly Earnings m/m': 'US_AVG_EARNINGS',
+    'Unemployment Claims': 'US_INITIAL_CLAIMS',
+    'ISM Manufacturing PMI': 'US_ISM_MFG_PMI',
+    'ISM Services PMI': 'US_ISM_SERVICES_PMI',
     
     # --- 4. 其它关键事件 ---
-    '136082': 'US_ADP_NFP',              # ADP Non-Farm Employment Change
-    '136202': 'US_CONS_CONFIDENCE',      # Consumer Confidence
+    'ADP Non-Farm Employment Change': 'US_ADP_NFP',
+    'CB Consumer Confidence': 'US_CONS_CONFIDENCE',
 }
+
