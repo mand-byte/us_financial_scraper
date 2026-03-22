@@ -62,25 +62,25 @@ class MassiveFilingsDisclosuresScraper:
                 pass
         logger.info("🛑 Massive Filings & Disclosures 搜刮器停止。")
 
-    def sync_10k_sections(self):
+    def sync_10k_sections(self) -> int:
         last_date = self.fundamental_repo.get_global_latest_10k_sections_date()
         if last_date is None:
              last_date = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").date()
-             logger.info(f"10-K Sections 初次同步，使用冷启动日期: {self.COLD_START_DATE}")
+             logger.debug(f"10-K Sections 初次同步，使用冷启动日期: {self.COLD_START_DATE}")
 
         date_str = last_date.strftime("%Y-%m-%d")
-        logger.info(f"🚀 拉取 10-K sections 数据 (起: {date_str})...")
+        logger.debug(f"拉取 10-K sections 数据 (起: {date_str})...")
         
         df_raw = self.massive.get_stock_10k_sections(
             period_end_gte=date_str, limit=1000
         )
 
         if df_raw is None or df_raw.empty:
-            logger.info("10-K Sections 数据无新增。")
-            return
+            logger.debug("10-K Sections 数据无新增。")
+            return 0
 
         if "ticker" not in df_raw.columns:
-            return
+            return 0
             
         df_raw = df_raw.dropna(subset=["ticker"])
         
@@ -97,25 +97,26 @@ class MassiveFilingsDisclosuresScraper:
                 logger.warning(f"⚠️ 10-K Sections 清洗后丢弃 {dropped} 条异常记录。")
         if not clean_df.empty:
             self.fundamental_repo.insert_stock_10k_sections_raw(clean_df)
-        logger.info(f"10-K Sections 数据拉取完成，新增 {len(clean_df)} 条记录。")
+        logger.debug(f"10-K Sections 数据拉取完成，新增 {len(clean_df)} 条记录。")
+        return len(clean_df)
 
-    def sync_risk_factors(self):
+    def sync_risk_factors(self) -> int:
         last_date = self.fundamental_repo.get_global_latest_risk_factors_date()
         if last_date is None:
              last_date = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").date()
 
         date_str = last_date.strftime("%Y-%m-%d")
-        logger.info(f"🚀 拉取 Risk Factors 数据 (起: {date_str})...")
+        logger.debug(f"拉取 Risk Factors 数据 (起: {date_str})...")
         df_raw = self.massive.get_risk_factors(
             filing_date_gte=date_str, limit=5000
         )
 
         if df_raw is None or df_raw.empty:
-            logger.info("Risk Factors 数据无新增。")
-            return
+            logger.debug("Risk Factors 数据无新增。")
+            return 0
 
         if "ticker" not in df_raw.columns:
-            return
+            return 0
             
         df_raw = df_raw.dropna(subset=["ticker"])
         
@@ -132,15 +133,16 @@ class MassiveFilingsDisclosuresScraper:
                 logger.warning(f"⚠️ Risk Factors 清洗后丢弃 {dropped} 条异常记录。")
         if not clean_df.empty:
             self.fundamental_repo.insert_stock_risk_factors(clean_df)
-        logger.info(f"Risk Factors 数据拉取完成，新增 {len(clean_df)} 条记录。")
+        logger.debug(f"Risk Factors 数据拉取完成，新增 {len(clean_df)} 条记录。")
+        return len(clean_df)
 
-    def sync_risk_taxonomy(self):
-        logger.info("🚀 拉取 Risk Taxonomy 数据 ...")
+    def sync_risk_taxonomy(self) -> int:
+        logger.debug("拉取 Risk Taxonomy 数据 ...")
         df_raw = self.massive.get_risk_taxonomy(limit=5000)
 
         if df_raw is None or df_raw.empty:
-            logger.info("Risk Taxonomy 数据无新增。")
-            return
+            logger.debug("Risk Taxonomy 数据无新增。")
+            return 0
 
         clean_df = UsStockRiskTaxonomyModel.format_dataframe(df_raw)
         if not clean_df.empty:
@@ -153,11 +155,15 @@ class MassiveFilingsDisclosuresScraper:
                 logger.warning(f"⚠️ Risk Taxonomy 清洗后丢弃 {dropped} 条异常记录。")
         if not clean_df.empty:
             self.fundamental_repo.insert_stock_risk_taxonomy(clean_df)
-        logger.info(f"Risk Taxonomy 数据拉取完成，更新了 {len(clean_df)} 条记录。")
+        logger.info(f"✅ Risk Taxonomy 本轮完成: 更新记录={len(clean_df)}")
+        return len(clean_df)
 
     def refresh_incremental_filings(self):
-        self.sync_10k_sections()
-        self.sync_risk_factors()
+        rows_10k = self.sync_10k_sections()
+        rows_rf = self.sync_risk_factors()
+        logger.info(
+            f"✅ Filings 增量本轮完成: 10K_sections={rows_10k} risk_factors={rows_rf}"
+        )
 
     def refresh_all(self):
         self.refresh_incremental_filings()

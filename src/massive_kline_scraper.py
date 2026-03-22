@@ -214,7 +214,11 @@ class MassiveKlineScraper:
         """
         通过首字母全量拉取股票宇宙表 (使用 ticker.gt 鲁棒迭代)
         """
-        logger.info("Massive: 正在执行宇宙表例行同步并探测退市事件...")
+        logger.info("Massive Universe 同步开始。")
+        total_raw = 0
+        total_filtered = 0
+        inserted_rows = 0
+        missing_figi_count = 0
 
         old_df = self.repo.get_universe_tickers()
         if not old_df.empty:
@@ -222,7 +226,7 @@ class MassiveKlineScraper:
             old_df = UsStockUniverseModel.format_dataframe(old_df)
         try:
             # 1. 全量抓取股票 (不区分活跃状态，由 API 或后续逻辑统一处理)
-            logger.info("  正在通过 ticker 顺序迭代拉取全量 Ticker 列表...")
+            logger.debug("正在通过 ticker 顺序迭代拉取全量 Ticker 列表...")
             active_df = self._fetch_tickers_by_active(active=True)
             if active_df is None:
                 return
@@ -235,6 +239,7 @@ class MassiveKlineScraper:
                 logger.error("Massive: api 返回为空，等待调度器下次运行")
                 return
             all_tickers_raw = pd.concat(all_tickers_dfs, ignore_index=True)
+            total_raw = len(all_tickers_raw)
 
             # 【过滤】仅保留普通股 (CS) 和 ADR (ADRC)，剔除权证、优先股、单元等
             if "type" in all_tickers_raw.columns:
@@ -243,14 +248,12 @@ class MassiveKlineScraper:
                     all_tickers_raw["type"].isin(["CS", "ADRC"])
                 ]
                 after_count = len(all_tickers_raw)
-                logger.info(
+                logger.debug(
                     f"✂️ 已过滤非标准股票 (Warrant/PFD/Unit等)，剩余 {after_count} / {before_count} 个 Ticker。"
                 )
+            total_filtered = len(all_tickers_raw)
 
-            ticker_count = len(all_tickers_raw)
-            logger.info(
-                f"📊 本次宇宙表同步准备更新，共计处理 {ticker_count} 个 Ticker。"
-            )
+            logger.debug(f"本次宇宙表同步准备更新，共计处理 {total_filtered} 个 Ticker。")
 
             all_tickers = UsStockUniverseModel.format_dataframe(all_tickers_raw)
 
@@ -286,7 +289,7 @@ class MassiveKlineScraper:
 
             if missing_figi_mask.any():
                 pending_df = all_tickers[missing_figi_mask].copy()
-                logger.info(f"发现 {len(pending_df)} 条记录缺失 FIGI，执行补全...")
+                logger.debug(f"发现 {len(pending_df)} 条记录缺失 FIGI，执行补全...")
 
                 # 补全后的数据
                 enriched_part = self.enrich_figi(pending_df)
@@ -311,6 +314,7 @@ class MassiveKlineScraper:
             ]
 
             no_figi_count = len(all_tickers) - len(final_to_insert)
+            missing_figi_count = no_figi_count
             if no_figi_count > 0:
                 no_figi_df = all_tickers[
                     all_tickers["composite_figi"].isna()
@@ -323,12 +327,13 @@ class MassiveKlineScraper:
             if not final_to_insert.empty:
                 # 6. 全量/增量写入（ReplacingMergeTree 会自动根据 FIGI 处理新增或更新）
                 self.repo.insert_stock_universe(final_to_insert)
+                inserted_rows = len(final_to_insert)
 
                 # 7. 只有真正“新出现”的 Ticker 或变动，以及 Mapping 表为空时，才去跑 Mapping 历史
                 is_mapping_empty = self.repo.is_mapping_table_empty()
                 if old_df.empty or is_mapping_empty:
                     if is_mapping_empty:
-                        logger.info("⚠️ 检测到 FIGI 映射表为空，开始执行存量补全...")
+                        logger.debug("检测到 FIGI 映射表为空，开始执行存量补全...")
                     self.load_all_figi_ticker_mapping(final_to_insert)
                 else:
                     new_tickers = final_to_insert[
@@ -339,6 +344,11 @@ class MassiveKlineScraper:
 
         except Exception as e:
             logger.error(f"宇宙表同步失败: {e}", exc_info=True)
+        else:
+            logger.info(
+                f"✅ Massive Universe 本轮完成: 原始={total_raw} 过滤后={total_filtered} "
+                f"入库={inserted_rows} 缺失FIGI跳过={missing_figi_count}"
+            )
 
     def fetch_klines(self):
         """
@@ -349,14 +359,19 @@ class MassiveKlineScraper:
         4. active=0 + 总返回数据量 < limit → 标记 state=1
         """
         logger.info("🚀 启动 K 线增量拉取...")
+        total_tasks = 0
+        inserted_rows = 0
+        failed_tickers = 0
+        marked_done = 0
 
         # 1. 获取任务列表
         tasks_df = self.repo.get_sync_tasks(
             "us_minutes_klines", id_column="composite_figi"
         )
         if tasks_df.empty:
-            logger.info("无 K 线拉取任务。")
+            logger.debug("无 K 线拉取任务。")
             return
+        total_tasks = len(tasks_df)
 
         # 2. 批量获取每只股票在 us_minutes_klines 中的最新时间戳
         latest_ts_df = self.repo.get_all_stocks_latest_ts_df_by_group()
@@ -420,6 +435,7 @@ class MassiveKlineScraper:
                         self.repo.update_sync_status(
                             "us_minutes_klines", composite_figi, "composite_figi", 1
                         )
+                        marked_done += 1
 
                     continue
 
@@ -427,21 +443,27 @@ class MassiveKlineScraper:
                     data_raw, composite_figi
                 )
                 self.repo.insert_stock_minutes_klines(clean_df)
+                inserted_rows += len(clean_df)
 
                 # 5. 退市完结判定：生成器正常跑完（无报错）+ active=0 → 数据已全部拉完
                 if active == 0 and len(data_raw) < self.API_KLINE_MAX_LIMIT:
                     self.repo.update_sync_status(
                         "us_minutes_klines", composite_figi, "composite_figi", 1
                     )
-                    logger.info(
+                    marked_done += 1
+                    logger.debug(
                         f"🏁 {ticker} delisted & data exhausted ({len(data_raw)} rows). Marked state=1."
                     )
 
             except Exception as e:
+                failed_tickers += 1
                 logger.error(f"❌ 处理标的 {ticker} 异常: {e}")
                 continue
 
-        logger.info("✅ K 线拉取任务完成。")
+        logger.info(
+            f"✅ K线本轮完成: 任务={total_tasks} 新增行数={inserted_rows} "
+            f"退市完成标记={marked_done} 失败ticker={failed_tickers}"
+        )
 
     def stop(self):
         if hasattr(self, "scheduler") and self.scheduler:
