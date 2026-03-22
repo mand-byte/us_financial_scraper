@@ -184,8 +184,7 @@ class SecEdgarScraper:
             # 启动时拉一次，之后星期1-星期5，每个小时拉取一次
             self.scheduler.add_job(
                 self.sync_all_forms,
-                "interval",
-                hour="*/1",
+                "cron",
                 minute=0,
                 id="sync_all_edgar_forms",
                 next_run_time=datetime.now(self.NYC),
