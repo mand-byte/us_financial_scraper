@@ -77,12 +77,15 @@ class ForexFactoryScraper:
 
     def sync_history(self):
         """同步历史数据：从数据库记录开始逐月追溯"""
-        last_ts = self.repo.get_latest_macro_indicators(
-            list(self.indicators_map.values())
-        )
+        last_ts_list: list[datetime] = []
+        for indicator_code in self.indicators_map.values():
+            ts = self.repo.get_latest_macro_indicators(indicator_code)
+            if ts is not None:
+                last_ts_list.append(ts)
+
         start_dt = (
-            last_ts
-            if last_ts
+            min(last_ts_list)
+            if last_ts_list
             else datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").replace(
                 tzinfo=ZoneInfo("UTC")
             )
@@ -121,18 +124,7 @@ class ForexFactoryScraper:
     def start(self):
         app_logger.info("✅ ForexFactory 宏观日历搜刮器激活。")
 
-        # 1. 启动时先触发一次补数（独立任务 ID，避免与日常任务混淆）
-        self.scheduler.add_job(
-            self.sync_history,
-            id="initial_forexfactory_sync",
-            next_run_time=datetime.now(self.NYC),
-            max_instances=1,
-            coalesce=True,
-            replace_existing=True,
-            misfire_grace_time=24 * 3600,
-        )
-
-        # 2. 每日 21:00 NYC 更新当月最新数值
+        # 每日 21:00 NYC 更新当月最新数值，启动时立即执行一次
         self.scheduler.add_job(
             self.sync_history,  # 直接复用历史同步逻辑即可补齐当月
             "cron",
@@ -140,6 +132,7 @@ class ForexFactoryScraper:
             minute=0,
             timezone=self.NYC,
             id="daily_forexfactory_sync",
+            next_run_time=datetime.now(self.NYC),
             max_instances=1,
             coalesce=True,
             replace_existing=True,
@@ -150,10 +143,6 @@ class ForexFactoryScraper:
         if self.scheduler:
             try:
                 self.scheduler.remove_job("daily_forexfactory_sync")
-            except Exception:
-                pass
-            try:
-                self.scheduler.remove_job("initial_forexfactory_sync")
             except Exception:
                 pass
         app_logger.info("🛑 ForexFactory 搜刮器停止。")

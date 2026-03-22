@@ -126,7 +126,8 @@ class GDELTScraper:
     def sync_v2_incremental(self):
         """同步 GDELT 2.0 增量数据"""
 
-        start_ts = SentimentRepo().get_latest_gdelt_macro_sentiment()
+        repo = SentimentRepo()
+        start_ts = repo.get_latest_gdelt_cursor()
         app_logger.info(f"🔄 GDELT 增量同步起点: {start_ts}")
 
         try:
@@ -156,6 +157,7 @@ class GDELTScraper:
                     status = self.fetch_and_process_v2(file_url, file_ts_str)
                     if status == 1:
                         start_ts = file_ts
+                        repo.upsert_gdelt_cursor(start_ts)
                         self.remote_fail_counts.pop(file_ts_str, None)
                     elif status == -1:
                         # 远程服务器问题
@@ -164,6 +166,7 @@ class GDELTScraper:
                         if fails >= 3:
                             app_logger.error(f"🧨 GDELT 文件远程错误达到 3 次，跳过该文件: {file_ts_str}")
                             start_ts = file_ts
+                            repo.upsert_gdelt_cursor(start_ts)
                             self.remote_fail_counts.pop(file_ts_str, None)
                         else:
                             app_logger.warning(f"⚠️ GDELT 文件远程错误 (第 {fails} 次): {file_ts_str}，停止本次增量，等待下次调度")

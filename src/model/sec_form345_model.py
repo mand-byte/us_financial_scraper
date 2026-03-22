@@ -42,25 +42,35 @@ def _get_state_ddl(table_name):
     """
 
 class _SecFormBase(BaseClickHouseModel):
+    FORM345_UNION_SQL: ClassVar[str] = (
+        "SELECT * FROM sec_form3_insider_transactions "
+        "UNION ALL "
+        "SELECT * FROM sec_form4_insider_transactions "
+        "UNION ALL "
+        "SELECT * FROM sec_form5_insider_transactions"
+    )
     QUERY_LATEST_TS_BY_CIK_SQL: ClassVar[str] = "SELECT issuer_cik as cik, max(acceptance_datetime) as last_ts FROM {table_name} GROUP BY issuer_cik"
     QUERY_GLOBAL_LATEST_ACCEPTANCE_DATE_SQL: ClassVar[str] = (
         "SELECT max(acceptance_datetime) as last_date "
-        "FROM sec_form345_insider_transactions"
+        f"FROM ({FORM345_UNION_SQL}) s"
     )
     QUERY_BY_FIGI_SQL: ClassVar[str] = (
-        "SELECT * FROM sec_form345_insider_transactions "
-        "WHERE figi = {figi} "
+        "SELECT s.* "
+        f"FROM ({FORM345_UNION_SQL}) s "
+        "ANY INNER JOIN us_stock_universe u "
+        "ON right(concat('0000000000', s.issuer_cik), 10) = u.cik "
+        "WHERE u.composite_figi = {figi} "
         "ORDER BY acceptance_datetime DESC "
         "LIMIT {limit}"
     )
     QUERY_BY_OWNER_SQL: ClassVar[str] = (
-        "SELECT * FROM sec_form345_insider_transactions "
+        f"SELECT * FROM ({FORM345_UNION_SQL}) s "
         "WHERE reporting_owner_name = {owner_name} "
         "ORDER BY acceptance_datetime DESC "
         "LIMIT {limit}"
     )
     QUERY_BY_TICKER_SQL: ClassVar[str] = (
-        "SELECT * FROM sec_form345_insider_transactions "
+        f"SELECT * FROM ({FORM345_UNION_SQL}) s "
         "WHERE issuer_ticker = {ticker} "
         "ORDER BY acceptance_datetime DESC "
         "LIMIT {limit}"

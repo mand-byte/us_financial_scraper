@@ -79,7 +79,7 @@ class MassiveNewsScraper:
         date_raw = self.massive.get_stock_news(
             published_utc_type="published_utc.gte", date=ts.isoformat()
         )
-        if date_raw.empty:
+        if date_raw is None or date_raw.empty:
             logger.info("无新增新闻。")
             return
 

@@ -37,19 +37,22 @@ class UsStockDividendsModel(BaseClickHouseModel):
         "split_adjusted_cash_amount": {"type": "float64"},
         "currency": {"type": "str"},
         "distribution_type": {"type": "str"},
-        "frequency": {"type": "float64"},
+        "frequency": {"type": "uint16"},
         "historical_adjustment_factor": {"type": "float64"},
     }
 
-    QUERY_LATEST_EX_DATE_BY_FIGI_SQL: ClassVar[str] = "SELECT max(ex_dividend_date) as last_date FROM us_stock_dividends WHERE composite_figi = '{composite_figi}'"
+    QUERY_LATEST_EX_DATE_BY_FIGI_SQL: ClassVar[str] = (
+        "SELECT max(d.ex_dividend_date) as last_date "
+        "FROM us_stock_dividends d "
+        "ANY INNER JOIN us_stock_universe u ON d.ticker = u.ticker "
+        "WHERE u.composite_figi = {composite_figi}"
+    )
     QUERY_GLOBAL_LATEST_EX_DATE_SQL: ClassVar[str] = "SELECT max(ex_dividend_date) as last_date FROM us_stock_dividends"
 
     @classmethod
     def build_query_latest_ex_date_by_figi_sql(cls, composite_figi: str) -> str:
-        return (
-            "SELECT max(ex_dividend_date) as last_date "
-            "FROM us_stock_dividends "
-            f"WHERE composite_figi = {cls.sql_literal(composite_figi)}"
+        return cls.QUERY_LATEST_EX_DATE_BY_FIGI_SQL.format(
+            composite_figi=cls.sql_literal(composite_figi)
         )
 
     @classmethod
@@ -81,5 +84,10 @@ class UsStockDividendsModel(BaseClickHouseModel):
         float_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "float64"]
         for col in float_cols:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
+
+        if "frequency" in df.columns:
+            freq = pd.to_numeric(df["frequency"], errors="coerce")
+            freq = freq.where(freq.isna(), freq.round().clip(lower=0, upper=65535))
+            df["frequency"] = freq.astype("Int64")
 
         return df[list(cls.SCHEMA_CLEAN.keys())]

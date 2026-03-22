@@ -19,6 +19,10 @@ _EXPORT_MAP = {
         "src.model.gdelt_macro_sentiment_model",
         "GdeltMacroSentimentModel",
     ),
+    "GdeltMacroSentimentStateModel": (
+        "src.model.gdelt_macro_sentiment_state_model",
+        "GdeltMacroSentimentStateModel",
+    ),
     "UsMacroDailyKlineModel": (
         "src.model.us_macro_daily_kline_model",
         "UsMacroDailyKlineModel",

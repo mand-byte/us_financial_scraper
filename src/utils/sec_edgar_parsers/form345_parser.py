@@ -99,7 +99,7 @@ class Form345Parser:
         if issuer is None:
             return results
 
-        issuer_cik = self._get_text(issuer, "issuerCik")
+        issuer_cik = self._get_zfilled_cik(self._get_text(issuer, "issuerCik"))
         issuer_ticker = self._get_text(issuer, "issuerTradingSymbol")
         filing_date = self._get_text(root, "periodOfReport")
 

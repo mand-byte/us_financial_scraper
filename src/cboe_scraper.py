@@ -33,7 +33,7 @@ class CboeScraper:
 
     def start(self):
         app_logger.info("✅ CBOE VIX 指数与期货搜刮器已激活。")
-        # 1. 每日 21:00 NYC 同步
+        # 1. 每日 21:00 NYC 同步（启动时立即执行一次）
         self.scheduler.add_job(
             self.scraping,
             "cron",
@@ -45,10 +45,6 @@ class CboeScraper:
             max_instances=1,
             coalesce=True,
             replace_existing=True,
-        )
-        # 2. 启动同步
-        self.scheduler.add_job(
-            self.scraping, next_run_time=datetime.now(self.NYC), id="initial_vix_sync"
         )
 
     def scraping(self):
@@ -90,10 +86,6 @@ class CboeScraper:
         if hasattr(self, "scheduler") and self.scheduler:
             try:
                 self.scheduler.remove_job("daily_vix_scraping")
-            except Exception:
-                pass
-            try:
-                self.scheduler.remove_job("initial_vix_sync")
             except Exception:
                 pass
         app_logger.info("🛑 CBOE VIX 搜刮器停止。")
