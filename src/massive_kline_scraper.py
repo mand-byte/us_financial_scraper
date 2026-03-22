@@ -351,7 +351,12 @@ class MassiveKlineScraper:
         if not latest_ts_df.empty:
             for _, r in latest_ts_df.iterrows():
                 if pd.notna(r["last_ts"]):
-                    ts_map[r["composite_figi"]] = int(
+                    figi_key = (
+                        r["composite_figi"].decode("utf-8", "ignore")
+                        if isinstance(r["composite_figi"], bytes)
+                        else str(r["composite_figi"])
+                    )
+                    ts_map[figi_key] = int(
                         pd.to_datetime(r["last_ts"]).timestamp() * 1000
                     )
 
@@ -369,7 +374,11 @@ class MassiveKlineScraper:
                 continue
 
             ticker = row["ticker"]
-            composite_figi = row["composite_figi"]
+            composite_figi = (
+                row["composite_figi"].decode("utf-8", "ignore")
+                if isinstance(row["composite_figi"], bytes)
+                else str(row["composite_figi"])
+            )
             active = row["active"]
 
             try:

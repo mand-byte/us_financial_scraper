@@ -1,5 +1,6 @@
 from src.model.base_clickhouse_model import BaseClickHouseModel
 import pandas as pd
+import numpy as np
 from typing import ClassVar, Dict, Any
 
 # ==========================================
@@ -48,6 +49,13 @@ class UsStockMinutesKlineModel(BaseClickHouseModel):
             return pd.DataFrame()
 
         df = df.copy()
+        default_figi = (
+            composite_figi.decode("utf-8", "ignore")
+            if isinstance(composite_figi, bytes)
+            else str(composite_figi)
+            if composite_figi is not None
+            else ""
+        )
 
         rename_map = {
             "t": "timestamp",
@@ -66,11 +74,14 @@ class UsStockMinutesKlineModel(BaseClickHouseModel):
                 df[col] = meta.get("default", None)
 
         df["composite_figi"] = df["composite_figi"].apply(
-            lambda x: x.decode("utf-8") if isinstance(x, bytes) else str(x) if pd.notna(x) else ""
+            lambda x: x.decode("utf-8", "ignore") if isinstance(x, bytes) else x
+        )
+        df["composite_figi"] = df["composite_figi"].replace(
+            {None: np.nan, "": np.nan, "nan": np.nan, "None": np.nan}
         )
         df["composite_figi"] = (
             df["composite_figi"]
-            .fillna(str(composite_figi))
+            .fillna(default_figi)
             .astype(str)
             .str.slice(0, 12)
         )
