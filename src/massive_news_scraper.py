@@ -45,13 +45,11 @@ class MassiveNewsScraper:
         self.API_MAX_LIMIT = 1000
 
     def start(self):
-        """异步注册任务并触发初始化补数"""
-        # 1. 🌟 每日滚动重刷 (每天一次，活跃标的回溯 3 天)
+        """启动时拉一次，之后每5分钟拉1000条，从最近的新闻条数开始拉取"""
         self.scheduler.add_job(
             self.fectch_news,
             "cron",
-            hour=20,
-            minute=0,
+            minute="*/5",
             timezone=self.NYC,
             id="fectch_news",
             next_run_time=datetime.now(self.NYC),
@@ -89,7 +87,7 @@ class MassiveNewsScraper:
             date_raw = date_raw[
                 date_raw["tickers"].apply(lambda x: isinstance(x, list) and len(x) <= 5)
             ]
-            
+
             date_raw = (
                 date_raw.explode("tickers")
                 .rename(columns={"tickers": "ticker"})

@@ -95,18 +95,7 @@ class YahooMacroScraper:
     def start(self):
         app_logger.info("✅ Yahoo 宏观搜刮器激活 (日线精度)。")
 
-        # 1. 启动时触发一次增量补数（异步任务）
-        self.scheduler.add_job(
-            self._initial_sync,
-            id="initial_yahoo_macro_sync",
-            next_run_time=datetime.now(self.NYC),
-            max_instances=1,
-            coalesce=True,
-            replace_existing=True,
-            misfire_grace_time=24 * 3600,
-        )
-
-        # 2. 每日 18:30 NYC 执行同步 (收盘后)
+        # 2. 启动时+每日 18:30 NYC 执行同步 (收盘后)
         self.scheduler.add_job(
             self._initial_sync,
             "cron",
@@ -118,6 +107,7 @@ class YahooMacroScraper:
             coalesce=True,
             replace_existing=True,
             misfire_grace_time=24 * 3600,
+            next_run_time=datetime.now(self.NYC),
         )
 
     def stop(self):

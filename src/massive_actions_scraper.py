@@ -46,8 +46,9 @@ class MassiveActionsScraper:
             self.scheduler.add_job(
                 self.refresh_recent_actions,
                 "cron",
-                hour=20,
-                minute=30,
+                hour="*/1",
+                minute=0,
+                day_of_week="mon-fri",
                 timezone=self.NYC,
                 id="rolling_actions_refresh",
                 next_run_time=datetime.now(self.NYC),  # 启动时立即执行一次
@@ -63,8 +64,8 @@ class MassiveActionsScraper:
     def fetch_dividends(self):
         last_date = self.fundamental_repo.get_global_latest_stock_dividends_date()
         if last_date is None:
-             last_date = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").date()
-             logger.info(f"派息初次同步，使用冷启动日期: {self.COLD_START_DATE}")
+            last_date = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").date()
+            logger.info(f"派息初次同步，使用冷启动日期: {self.COLD_START_DATE}")
 
         date_str = last_date.strftime("%Y-%m-%d")
 
@@ -92,8 +93,8 @@ class MassiveActionsScraper:
     def fetch_splits(self):
         last_date = self.fundamental_repo.get_global_latest_stock_splits_date()
         if last_date is None:
-             last_date = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").date()
-             logger.info(f"拆分初次同步，使用冷启动日期: {self.COLD_START_DATE}")
+            last_date = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").date()
+            logger.info(f"拆分初次同步，使用冷启动日期: {self.COLD_START_DATE}")
 
         date_str = last_date.strftime("%Y-%m-%d")
 

@@ -83,8 +83,8 @@ class FredScraper:
         self.scheduler.add_job(
             self.sync_all,
             "cron",
-            hour=17,
-            minute=15,
+            hour=[8, 18, 20],
+            minute=[5, 15, 30, 45],
             timezone=self.NYC,
             id="daily_fred_sync",
             coalesce=True,
