@@ -24,3 +24,4 @@ ENV/
 logs/
 data/
 tests/.local_packages/
+uv.lock
