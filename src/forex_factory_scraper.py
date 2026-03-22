@@ -100,17 +100,17 @@ class ForexFactoryScraper:
             app_logger.info(f"📅 ForexFactory: 正在补齐月份: {year}-{month_label}")
 
             try:
-                    df_raw = scrape_month(month_label, year)
+                df_raw = scrape_month(month_label, year)
 
-                    if not df_raw.empty:
-                        df_processed = self.process_scraped_data(df_raw)
-                        if not df_processed.empty:
-                            # Model -> DF -> Repo
-                            clean_df = UsMacroIndicatorsModel.format_dataframe(df_processed)
-                            self.repo.insert_macro_indicators(clean_df)
-                            app_logger.info(
-                                f"✅ ForexFactory: {year}-{month_label} 入库 {len(clean_df)} 行"
-                            )
+                if not df_raw.empty:
+                    df_processed = self.process_scraped_data(df_raw)
+                    if not df_processed.empty:
+                        # Model -> DF -> Repo
+                        clean_df = UsMacroIndicatorsModel.format_dataframe(df_processed)
+                        self.repo.insert_macro_indicators(clean_df)
+                        app_logger.info(
+                            f"✅ ForexFactory: {year}-{month_label} 入库 {len(clean_df)} 行"
+                        )
             except Exception as e:
                 app_logger.error(f"抓取 {year}-{month_label} 失败: {e}")
 
@@ -128,9 +128,10 @@ class ForexFactoryScraper:
         self.scheduler.add_job(
             self.sync_history,  # 直接复用历史同步逻辑即可补齐当月
             "cron",
-            hour=21,
-            minute=0,
+            hour="8-20",
+            minute="*/15",
             timezone=self.NYC,
+            day_of_week="mon-fri",
             id="daily_forexfactory_sync",
             next_run_time=datetime.now(self.NYC),
             max_instances=1,

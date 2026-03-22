@@ -79,15 +79,16 @@ class FredScraper:
         if not self.fred:
             return
 
-        # 2. 每日 17:15 NYC 执行 (确保当日收盘后的指标已发布)
+        # 2. 每日 8,18,20点 5,15,30,45分 NYC 执行 (确保当日收盘后的指标已发布)
         self.scheduler.add_job(
             self.sync_all,
             "cron",
-            hour=[8, 18, 20],
-            minute=[5, 15, 30, 45],
+            hour="8, 18, 20",
+            minute="5, 15, 30, 45",
             timezone=self.NYC,
             id="daily_fred_sync",
             coalesce=True,
+            day_of_week="mon-fri",
             replace_existing=True,
             misfire_grace_time=24 * 3600,
             next_run_time=datetime.now(self.NYC),
