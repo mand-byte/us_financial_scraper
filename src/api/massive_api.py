@@ -92,7 +92,9 @@ class MassiveApi:
             if not next_url:
                 break
             if next_url in seen_next_urls:
-                app_logger.warning(f"Massive API next_url 重复，提前停止分页: {next_url}")
+                app_logger.warning(
+                    f"Massive API next_url 重复，提前停止分页: {next_url}"
+                )
                 break
             if pages >= self.MAX_PAGES_PER_REQUEST:
                 app_logger.warning(
@@ -109,9 +111,7 @@ class MassiveApi:
         self,
         ticker_filter_type: Optional[str] = None,
         ticker: Optional[str] = None,
-        type_name: Optional[str] = "CS",
         sort_type: Optional[str] = None,
-        market: str = "stocks",
         active: Optional[bool] = None,
         order: str = "asc",
         limit: int = 1000,
@@ -121,12 +121,11 @@ class MassiveApi:
         :param max_pages: maximum pages to fetch
         """
         raw_params = {
-            "market": market,
-            "limit": limit,
+            "market": "stocks",
+            "limit": str(limit),
             "order": order,
+            "type": "CS",
         }
-        if type_name:
-            raw_params["type"] = type_name
 
         if active is not None:
             raw_params["active"] = "true" if active else "false"

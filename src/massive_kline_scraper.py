@@ -71,6 +71,7 @@ class MassiveKlineScraper:
                 ticker=last_ticker,
                 sort_type="ticker",
                 active=active,
+                limit=self.API_TICKERS_MAX_LIMIT,
             )
             if tickers_raw is None:
                 logger.error("Massive: 迭代获取股票列表中断,等待调度器下次运行")
@@ -224,9 +225,7 @@ class MassiveKlineScraper:
         if df.empty or "cik" not in df.columns:
             return df
 
-        mask_missing = (
-            df["cik"].isna() | (df["cik"] == "") | (df["cik"] == "nan")
-        )
+        mask_missing = df["cik"].isna() | (df["cik"] == "") | (df["cik"] == "nan")
         if not mask_missing.any():
             return df
 
@@ -236,13 +235,14 @@ class MassiveKlineScraper:
 
         ticker_to_cik = self._get_sec_ticker_cik_map()
         if ticker_to_cik:
-            df.loc[mask_missing, "cik"] = df.loc[mask_missing, "ticker"].astype(str).str.upper().map(
-                ticker_to_cik
+            df.loc[mask_missing, "cik"] = (
+                df.loc[mask_missing, "ticker"]
+                .astype(str)
+                .str.upper()
+                .map(ticker_to_cik)
             )
 
-        still_missing_mask = (
-            df["cik"].isna() | (df["cik"] == "") | (df["cik"] == "nan")
-        )
+        still_missing_mask = df["cik"].isna() | (df["cik"] == "") | (df["cik"] == "nan")
         if still_missing_mask.any():
             pending = df.loc[still_missing_mask, ["ticker", "name"]].drop_duplicates(
                 subset=["ticker"]
@@ -435,7 +435,9 @@ class MassiveKlineScraper:
                 )
             total_filtered = len(all_tickers_raw)
 
-            logger.debug(f"本次宇宙表同步准备更新，共计处理 {total_filtered} 个 Ticker。")
+            logger.debug(
+                f"本次宇宙表同步准备更新，共计处理 {total_filtered} 个 Ticker。"
+            )
 
             all_tickers = UsStockUniverseModel.format_dataframe(all_tickers_raw)
 
@@ -540,7 +542,9 @@ class MassiveKlineScraper:
                 pending_cik_df = all_tickers[missing_cik_mask].copy()
                 logger.debug(f"发现 {len(pending_cik_df)} 条记录缺失 CIK，执行补全...")
                 enriched_cik_part = self.enrich_cik(pending_cik_df)
-                enriched_cik_map = enriched_cik_part.set_index("ticker")["cik"].to_dict()
+                enriched_cik_map = enriched_cik_part.set_index("ticker")[
+                    "cik"
+                ].to_dict()
                 all_tickers["cik"] = all_tickers["cik"].replace(
                     {"": np.nan, "nan": np.nan}
                 )
