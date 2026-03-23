@@ -22,6 +22,7 @@ Massive K线搜刮器 (MassiveDataFetcher) - 需求与逻辑文档
 
 import pandas as pd
 import numpy as np
+import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -41,6 +42,8 @@ class MassiveKlineScraper:
     NYC = ZoneInfo("America/New_York")
     API_KLINE_MAX_LIMIT = 2000
     API_TICKERS_MAX_LIMIT = 1000
+    SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+    SEC_API_IO_MAPPING_URL = "https://api.sec-api.io/mapping/ticker/{ticker}"
 
     def __init__(self, scheduler: BlockingScheduler):
         self.massive = MassiveApi()
@@ -48,6 +51,8 @@ class MassiveKlineScraper:
         self.scheduler = scheduler
         self.KLINE_SPAN = settings.scraper.kline_span
         self.COLD_START_DATE = settings.scraper.scraping_start_date
+        self._sec_ticker_cik_map: dict[str, str] | None = None
+        self._sec_api_cik_cache: dict[str, str] = {}
 
     def _fetch_tickers_by_active(self, active: bool) -> pd.DataFrame | None:
         frames: list[pd.DataFrame] = []
@@ -210,6 +215,182 @@ class MassiveKlineScraper:
 
         return df
 
+    def enrich_cik(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        提取空 CIK 的记录并补全。
+        优先走 SEC 官方 ticker->CIK 静态映射；若仍缺失，再 fallback 到
+        覆盖 listed + delisted 的 sec-api mapping 接口。
+        """
+        if df.empty or "cik" not in df.columns:
+            return df
+
+        mask_missing = (
+            df["cik"].isna() | (df["cik"] == "") | (df["cik"] == "nan")
+        )
+        if not mask_missing.any():
+            return df
+
+        pending = df.loc[mask_missing, ["ticker"]].drop_duplicates(subset=["ticker"])
+        if pending.empty:
+            return df
+
+        ticker_to_cik = self._get_sec_ticker_cik_map()
+        if ticker_to_cik:
+            df.loc[mask_missing, "cik"] = df.loc[mask_missing, "ticker"].astype(str).str.upper().map(
+                ticker_to_cik
+            )
+
+        still_missing_mask = (
+            df["cik"].isna() | (df["cik"] == "") | (df["cik"] == "nan")
+        )
+        if still_missing_mask.any():
+            pending = df.loc[still_missing_mask, ["ticker", "name"]].drop_duplicates(
+                subset=["ticker"]
+            )
+            if not pending.empty:
+                fallback_map = self._get_sec_api_fallback_map(pending)
+                if fallback_map:
+                    df.loc[still_missing_mask, "cik"] = (
+                        df.loc[still_missing_mask, "ticker"]
+                        .astype(str)
+                        .str.upper()
+                        .map(fallback_map)
+                    )
+
+        return df
+
+    def _get_sec_ticker_cik_map(self) -> dict[str, str]:
+        if self._sec_ticker_cik_map is not None:
+            return self._sec_ticker_cik_map
+
+        headers = {
+            "User-Agent": 'Wuhan Hubber Consulting Co., Ltd. "wei@hubber.top"',
+            "Accept": "application/json",
+        }
+        try:
+            response = requests.get(
+                self.SEC_COMPANY_TICKERS_URL,
+                headers=headers,
+                timeout=(10, 60),
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except requests.RequestException as exc:
+            logger.error(f"拉取 SEC company_tickers.json 失败: {exc}")
+            self._sec_ticker_cik_map = {}
+            return self._sec_ticker_cik_map
+
+        ticker_to_cik: dict[str, str] = {}
+        records = payload.values() if isinstance(payload, dict) else payload
+        for item in records:
+            ticker = str(item.get("ticker", "")).strip().upper()
+            cik_raw = item.get("cik_str")
+            if not ticker or cik_raw in (None, ""):
+                continue
+            ticker_to_cik[ticker] = str(cik_raw).strip().zfill(10)
+
+        self._sec_ticker_cik_map = ticker_to_cik
+        logger.debug(f"SEC ticker->CIK 映射加载完成，共 {len(ticker_to_cik)} 条。")
+        return self._sec_ticker_cik_map
+
+    def _get_sec_api_fallback_map(self, pending: pd.DataFrame) -> dict[str, str]:
+        api_key = (settings.api.sec_api_io_key or "").strip()
+        if not api_key:
+            return {}
+
+        result: dict[str, str] = {}
+        headers = {"Authorization": api_key}
+        for row in pending.itertuples(index=False):
+            ticker = str(row.ticker).strip().upper()
+            if not ticker:
+                continue
+            if ticker in self._sec_api_cik_cache:
+                cached = self._sec_api_cik_cache[ticker]
+                if cached:
+                    result[ticker] = cached
+                continue
+
+            cik = self._lookup_sec_api_cik(
+                ticker=ticker,
+                company_name=str(getattr(row, "name", "") or "").strip(),
+                headers=headers,
+            )
+            self._sec_api_cik_cache[ticker] = cik
+            if cik:
+                result[ticker] = cik
+
+        if result:
+            logger.debug(f"sec-api fallback 补到 {len(result)} 条 ticker->CIK。")
+        return result
+
+    def _lookup_sec_api_cik(
+        self, ticker: str, company_name: str, headers: dict[str, str]
+    ) -> str:
+        url = self.SEC_API_IO_MAPPING_URL.format(ticker=ticker)
+        try:
+            response = requests.get(url, headers=headers, timeout=(10, 30))
+            response.raise_for_status()
+            payload = response.json()
+        except requests.RequestException as exc:
+            logger.warning(f"sec-api 查询 {ticker} 的 CIK 失败: {exc}")
+            return ""
+
+        if not isinstance(payload, list) or not payload:
+            return ""
+
+        normalized_name = self._normalize_company_name(company_name)
+        exact_ticker_rows = [
+            item
+            for item in payload
+            if str(item.get("ticker", "")).strip().upper() == ticker
+        ]
+        candidates = exact_ticker_rows or payload
+
+        if normalized_name:
+            for item in candidates:
+                item_name = self._normalize_company_name(str(item.get("name", "")))
+                if item_name and (
+                    item_name == normalized_name
+                    or item_name in normalized_name
+                    or normalized_name in item_name
+                ):
+                    cik = str(item.get("cik", "")).strip()
+                    if cik:
+                        return cik.zfill(10)
+
+        for item in candidates:
+            cik = str(item.get("cik", "")).strip()
+            if cik:
+                return cik.zfill(10)
+        return ""
+
+    @staticmethod
+    def _normalize_company_name(name: str) -> str:
+        cleaned = str(name or "").upper()
+        for token in [
+            ",",
+            ".",
+            "(",
+            ")",
+            "/",
+            "-",
+            " INC",
+            " CORP",
+            " CORPORATION",
+            " LTD",
+            " LIMITED",
+            " PLC",
+            " NV",
+            " SA",
+            " LP",
+            " LLC",
+            " ADS",
+            " COMMON STOCK",
+            " COM STK",
+        ]:
+            cleaned = cleaned.replace(token, " ")
+        return " ".join(cleaned.split())
+
     def load_stock_universe(self):
         """
         通过首字母全量拉取股票宇宙表 (使用 ticker.gt 鲁棒迭代)
@@ -219,6 +400,7 @@ class MassiveKlineScraper:
         total_filtered = 0
         inserted_rows = 0
         missing_figi_count = 0
+        missing_cik_count = 0
 
         old_df = self.repo.get_universe_tickers()
         if not old_df.empty:
@@ -279,6 +461,48 @@ class MassiveKlineScraper:
                     all_tickers["ticker"].map(ticker_to_figi)
                 )
 
+                # 继承老表已有的 CIK，优先用 FIGI，再回退到 ticker。
+                old_df["cik"] = old_df["cik"].apply(
+                    lambda x: (
+                        x.decode("utf-8")
+                        if isinstance(x, bytes)
+                        else str(x)
+                        if pd.notna(x)
+                        else ""
+                    )
+                )
+                old_df["cik"] = old_df["cik"].replace({"nan": "", None: ""})
+                old_df["composite_figi"] = old_df["composite_figi"].replace(
+                    {"nan": "", None: ""}
+                )
+
+                figi_to_cik = old_df.loc[
+                    old_df["cik"] != "", ["composite_figi", "cik"]
+                ].drop_duplicates(subset=["composite_figi"])
+                ticker_to_cik = old_df.loc[
+                    old_df["cik"] != "", ["ticker", "cik"]
+                ].drop_duplicates(subset=["ticker"])
+
+                if not figi_to_cik.empty:
+                    all_tickers["cik"] = all_tickers["cik"].replace(
+                        {"": np.nan, None: np.nan}
+                    )
+                    all_tickers["cik"] = all_tickers["cik"].fillna(
+                        all_tickers["composite_figi"].map(
+                            figi_to_cik.set_index("composite_figi")["cik"].to_dict()
+                        )
+                    )
+
+                if not ticker_to_cik.empty:
+                    all_tickers["cik"] = all_tickers["cik"].replace(
+                        {"": np.nan, None: np.nan}
+                    )
+                    all_tickers["cik"] = all_tickers["cik"].fillna(
+                        all_tickers["ticker"].map(
+                            ticker_to_cik.set_index("ticker")["cik"].to_dict()
+                        )
+                    )
+
             # 4. 找出真正缺失 FIGI 的行进行补全
             # 只要是新 Ticker 或者 依然没有 FIGI 的记录，都需要去 OpenFIGI 跑一趟
             missing_figi_mask = (
@@ -306,6 +530,24 @@ class MassiveKlineScraper:
                     all_tickers["ticker"].map(enriched_map)
                 )
 
+            # 4.1 继承旧值后，剩余缺失 CIK 的行用 Massive ticker events 补齐
+            missing_cik_mask = (
+                all_tickers["cik"].isna()
+                | (all_tickers["cik"] == "")
+                | (all_tickers["cik"] == "nan")
+            )
+            if missing_cik_mask.any():
+                pending_cik_df = all_tickers[missing_cik_mask].copy()
+                logger.debug(f"发现 {len(pending_cik_df)} 条记录缺失 CIK，执行补全...")
+                enriched_cik_part = self.enrich_cik(pending_cik_df)
+                enriched_cik_map = enriched_cik_part.set_index("ticker")["cik"].to_dict()
+                all_tickers["cik"] = all_tickers["cik"].replace(
+                    {"": np.nan, "nan": np.nan}
+                )
+                all_tickers["cik"] = all_tickers["cik"].fillna(
+                    all_tickers["ticker"].map(enriched_cik_map)
+                )
+
             # 5. 过滤掉最终还是没有 FIGI 的非法记录（主键不能为空）
             # 剩下的就是：全新的、补齐的、以及需要更新元数据的存量记录
             final_to_insert = all_tickers[
@@ -315,6 +557,13 @@ class MassiveKlineScraper:
 
             no_figi_count = len(all_tickers) - len(final_to_insert)
             missing_figi_count = no_figi_count
+            missing_cik_count = int(
+                (
+                    final_to_insert["cik"].isna()
+                    | (final_to_insert["cik"] == "")
+                    | (final_to_insert["cik"] == "nan")
+                ).sum()
+            )
             if no_figi_count > 0:
                 no_figi_df = all_tickers[
                     all_tickers["composite_figi"].isna()
@@ -347,7 +596,8 @@ class MassiveKlineScraper:
         else:
             logger.info(
                 f"✅ Massive Universe 本轮完成: 原始={total_raw} 过滤后={total_filtered} "
-                f"入库={inserted_rows} 缺失FIGI跳过={missing_figi_count}"
+                f"入库={inserted_rows} 缺失FIGI跳过={missing_figi_count} "
+                f"缺失CIK保留={missing_cik_count}"
             )
 
     def fetch_klines(self):

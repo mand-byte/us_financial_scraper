@@ -59,6 +59,7 @@ class APISettings:
     massive_delay: bool
     fred_api_key: str
     openfigi_api_key: Optional[str]
+    sec_api_io_key: Optional[str]
     sec_downloader_company: str
     sec_downloader_email: str
 
@@ -100,6 +101,7 @@ class Settings:
                 "massive_delay": self.api.massive_delay,
                 "fred_api_key_set": bool(self.api.fred_api_key),
                 "openfigi_api_key_set": bool(self.api.openfigi_api_key),
+                "sec_api_io_key_set": bool(self.api.sec_api_io_key),
                 "sec_downloader_company": self.api.sec_downloader_company,
                 "sec_downloader_email": self.api.sec_downloader_email,
             },
@@ -138,6 +140,7 @@ def load_settings() -> Settings:
             massive_delay=_get_bool("MASSIVE_DELAY", True),
             fred_api_key=_get_str("FRED_API_KEY", ""),
             openfigi_api_key=os.getenv("OPENFIGI_API_KEY"),
+            sec_api_io_key=os.getenv("SEC_API_IO_KEY"),
             sec_downloader_company=_get_str(
                 "SEC_DOWNLOADER_COMPANY", "QuantResearch"
             ).strip(" \"'“”"),
