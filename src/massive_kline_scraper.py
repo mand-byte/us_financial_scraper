@@ -391,6 +391,50 @@ class MassiveKlineScraper:
             cleaned = cleaned.replace(token, " ")
         return " ".join(cleaned.split())
 
+    @staticmethod
+    def _deduplicate_by_figi(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        同 FIGI 去重规则:
+        1) 若 active 值不一致，优先保留 active=1 的记录；
+        2) 若 active 值一致，保留 last_updated_utc 最大的记录。
+        """
+        if df.empty:
+            return df
+
+        picked_rows: list[pd.Series] = []
+        for _, group in df.groupby("composite_figi", sort=False):
+            active_values = set(
+                pd.to_numeric(group["active"], errors="coerce").fillna(0).astype(int)
+            )
+            if len(active_values) == 1:
+                chosen = group.sort_values(
+                    by=["last_updated_utc", "ticker"],
+                    ascending=[False, False],
+                    kind="stable",
+                ).iloc[0]
+            else:
+                active_group = group[
+                    pd.to_numeric(group["active"], errors="coerce")
+                    .fillna(0)
+                    .astype(int)
+                    == 1
+                ]
+                if active_group.empty:
+                    chosen = group.sort_values(
+                        by=["last_updated_utc", "ticker"],
+                        ascending=[False, False],
+                        kind="stable",
+                    ).iloc[0]
+                else:
+                    chosen = active_group.sort_values(
+                        by=["last_updated_utc", "ticker"],
+                        ascending=[False, False],
+                        kind="stable",
+                    ).iloc[0]
+            picked_rows.append(chosen)
+
+        return pd.DataFrame(picked_rows).reset_index(drop=True)
+
     def load_stock_universe(self):
         """
         通过首字母全量拉取股票宇宙表 (使用 ticker.gt 鲁棒迭代)
@@ -417,6 +461,7 @@ class MassiveKlineScraper:
                 return
 
             all_tickers_dfs = [df for df in [active_df, inactive_df] if not df.empty]
+
             if not all_tickers_dfs:
                 logger.error("Massive: api 返回为空，等待调度器下次运行")
                 return
@@ -557,7 +602,18 @@ class MassiveKlineScraper:
             final_to_insert = all_tickers[
                 all_tickers["composite_figi"].notna()
                 & (all_tickers["composite_figi"] != "")
-            ]
+            ].copy()
+
+            # 同一 FIGI 可能对应历史旧 ticker 与当前 ticker（如 SCH / SCHW）。
+            # Universe 表主键是 composite_figi，入库前必须折叠为 1 条并优先保留 active=1。
+            if not final_to_insert.empty:
+                before_dedup_count = len(final_to_insert)
+                final_to_insert = self._deduplicate_by_figi(final_to_insert)
+                dropped_same_figi = before_dedup_count - len(final_to_insert)
+                if dropped_same_figi > 0:
+                    logger.warning(
+                        f"发现 {dropped_same_figi} 条 FIGI 重复记录，已按 active/last_updated/ticker 优先级折叠。"
+                    )
 
             no_figi_count = len(all_tickers) - len(final_to_insert)
             missing_figi_count = no_figi_count

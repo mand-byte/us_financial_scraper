@@ -92,6 +92,14 @@ class SecEdgarScraper:
 
         return all_rows, self.download_dir, download_ok
 
+    @staticmethod
+    def _normalize_cik(value: Any) -> str:
+        if isinstance(value, bytes):
+            cik = value.decode("utf-8", "ignore")
+        else:
+            cik = str(value)
+        return cik.strip()
+
     def _sync_form_base(self, form_type: str, model_cls) -> None:
         table_name = model_cls.table_name
         app_logger.info(f"🔍 [Form {form_type}] 启动增量拉取检测...")
@@ -118,20 +126,21 @@ class SecEdgarScraper:
         )
 
         all_rows = []
+        skipped_no_cik = 0
         for _, row in tasks_df.iterrows():
             if row["sync_state"] == 1:
                 continue
 
             ticker = row["ticker"]
-            cik = (
-                row["cik"].decode("utf-8")
-                if isinstance(row["cik"], bytes)
-                else str(row["cik"])
-            )
+            cik = self._normalize_cik(row["cik"])
+            if (not cik) or (cik.lower() in {"nan", "none", "null"}):
+                skipped_no_cik += 1
+                app_logger.debug(f"⏭️ 跳过无 CIK 标的: {ticker}")
+                continue
             composite_figi = row["composite_figi"]
             active = row["active"]
 
-            zfilled_cik = str(cik).zfill(10)
+            zfilled_cik = cik.zfill(10)
             last_ts = ts_map.get(zfilled_cik)
             if pd.notna(last_ts) and last_ts:
                 start_dt = pd.to_datetime(last_ts).replace(tzinfo=timezone.utc)
@@ -145,7 +154,7 @@ class SecEdgarScraper:
 
             try:
                 rows, _, download_ok = self._download_and_parse(
-                    parser, cik, form_type, start_str, end_str
+                    parser, zfilled_cik, form_type, start_str, end_str
                 )
                 if rows:
                     df = pd.DataFrame(rows)
@@ -171,7 +180,8 @@ class SecEdgarScraper:
                 continue
 
         app_logger.info(
-            f"✅ [Form {form_type}] 本轮全量迭代完成，累计获取 {len(all_rows)} 条记录"
+            f"✅ [Form {form_type}] 本轮全量迭代完成，累计获取 {len(all_rows)} 条记录，"
+            f"无 CIK 跳过 {skipped_no_cik} 个 ticker"
         )
 
     def sync_all_forms(self):
