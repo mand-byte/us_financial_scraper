@@ -54,15 +54,15 @@ class UsStockUniverseModel(BaseClickHouseModel):
         "update_time": {"type": "datetime", "tz": "US/Eastern"},
     }
 
-    QUERY_ACTIVE_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe WHERE active = 1"
-    QUERY_DELISTED_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe WHERE active = 0"
-    QUERY_ALL_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe"
-    QUERY_CIK_TO_FIGI_MAPPING_SQL: ClassVar[str] = "SELECT cik, composite_figi FROM us_stock_universe WHERE length(composite_figi) > 0"
+    QUERY_ACTIVE_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe FINAL WHERE active = 1"
+    QUERY_DELISTED_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe FINAL WHERE active = 0"
+    QUERY_ALL_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe FINAL"
+    QUERY_CIK_TO_FIGI_MAPPING_SQL: ClassVar[str] = "SELECT cik, composite_figi FROM us_stock_universe FINAL WHERE length(composite_figi) > 0"
     QUERY_SYNC_TASKS_SQL: ClassVar[str] = (
         "SELECT "
         "    u.ticker, u.cik, u.composite_figi, u.active, u.delisted_utc, "
         "    ifNull(s.state, 0) as sync_state "
-        "FROM us_stock_universe u "
+        "FROM us_stock_universe FINAL u "
         "LEFT JOIN {state_table} s ON u.{id_column} = s.{id_column}"
     )
 

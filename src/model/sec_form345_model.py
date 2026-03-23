@@ -57,7 +57,7 @@ class _SecFormBase(BaseClickHouseModel):
     QUERY_BY_FIGI_SQL: ClassVar[str] = (
         "SELECT s.* "
         f"FROM ({FORM345_UNION_SQL}) s "
-        "ANY INNER JOIN us_stock_universe u "
+        "ANY INNER JOIN us_stock_universe FINAL u "
         "ON right(concat('0000000000', s.issuer_cik), 10) = u.cik "
         "WHERE u.composite_figi = {figi} "
         "ORDER BY acceptance_datetime DESC "

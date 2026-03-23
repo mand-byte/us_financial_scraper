@@ -34,7 +34,7 @@ class UsStockSplitsModel(BaseClickHouseModel):
     QUERY_LATEST_EX_DATE_BY_FIGI_SQL: ClassVar[str] = (
         "SELECT max(s.execution_date) as last_date "
         "FROM us_stock_splits s "
-        "ANY INNER JOIN us_stock_universe u ON s.ticker = u.ticker "
+        "ANY INNER JOIN us_stock_universe FINAL u ON s.ticker = u.ticker "
         "WHERE u.composite_figi = {composite_figi}"
     )
     QUERY_GLOBAL_LATEST_EXECUTION_DATE_SQL: ClassVar[str] = "SELECT max(execution_date) as last_date FROM us_stock_splits"
