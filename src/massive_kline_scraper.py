@@ -726,8 +726,8 @@ class MassiveKlineScraper:
                 # 如果距当前不足 1 分钟，跳过
                 if start_ms >= now_ms - 60000:
                     continue
-                now_add_day_ms = start_ms + 86400000
-                end_ms = min(now_add_day_ms, now_ms)
+                now_add_month_ms = start_ms + 86400000 * 30
+                end_ms = min(now_add_month_ms, now_ms)
                 data_raw = self.massive.get_historical_klines(
                     ticker=ticker,
                     multiplier=self.KLINE_SPAN,
