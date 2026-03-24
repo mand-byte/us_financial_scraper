@@ -105,7 +105,6 @@ class MassiveKlineScraper:
         self.scheduler.add_job(
             self.fetch_klines,
             "cron",
-            hour="10-16",
             minute="*/5",
             timezone=self.NYC,
             day_of_week="mon-fri",
