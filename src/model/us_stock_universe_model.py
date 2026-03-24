@@ -54,15 +54,21 @@ class UsStockUniverseModel(BaseClickHouseModel):
         "update_time": {"type": "datetime", "tz": "US/Eastern"},
     }
 
-    QUERY_ACTIVE_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe FINAL WHERE active = 1"
-    QUERY_DELISTED_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe FINAL WHERE active = 0"
+    QUERY_ACTIVE_TICKERS_SQL: ClassVar[str] = (
+        "SELECT * FROM us_stock_universe FINAL WHERE active = 1"
+    )
+    QUERY_DELISTED_TICKERS_SQL: ClassVar[str] = (
+        "SELECT * FROM us_stock_universe FINAL WHERE active = 0"
+    )
     QUERY_ALL_TICKERS_SQL: ClassVar[str] = "SELECT * FROM us_stock_universe FINAL"
-    QUERY_CIK_TO_FIGI_MAPPING_SQL: ClassVar[str] = "SELECT cik, composite_figi FROM us_stock_universe FINAL WHERE length(composite_figi) > 0"
+    QUERY_CIK_TO_FIGI_MAPPING_SQL: ClassVar[str] = (
+        "SELECT cik, composite_figi FROM us_stock_universe FINAL WHERE length(composite_figi) > 0"
+    )
     QUERY_SYNC_TASKS_SQL: ClassVar[str] = (
         "SELECT "
         "    u.ticker, u.cik, u.composite_figi, u.active, u.delisted_utc, "
         "    ifNull(s.state, 0) as sync_state "
-        "FROM us_stock_universe FINAL u "
+        "FROM us_stock_universe u FINAL"
         "LEFT JOIN {state_table} s ON u.{id_column} = s.{id_column}"
     )
 
@@ -106,7 +112,9 @@ class UsStockUniverseModel(BaseClickHouseModel):
             if meta["type"] == "str":
                 length = meta.get("len")
                 # 拦截 DB 查询返回的 FixedString(bytes) 格式，显式解码
-                df[col] = df[col].apply(lambda x: x.decode('utf-8', 'ignore') if isinstance(x, bytes) else x)
+                df[col] = df[col].apply(
+                    lambda x: x.decode("utf-8", "ignore") if isinstance(x, bytes) else x
+                )
                 df[col] = df[col].fillna("").astype(str)
                 df[col] = df[col].replace({"nan": "", "None": ""})
                 if length:

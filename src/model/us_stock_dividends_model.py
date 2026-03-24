@@ -2,6 +2,7 @@ from src.model.base_clickhouse_model import BaseClickHouseModel
 import pandas as pd
 from typing import ClassVar, Dict, Any
 
+
 class UsStockDividendsModel(BaseClickHouseModel):
     table_name: ClassVar[str] = "us_stock_dividends"
 
@@ -44,10 +45,12 @@ class UsStockDividendsModel(BaseClickHouseModel):
     QUERY_LATEST_EX_DATE_BY_FIGI_SQL: ClassVar[str] = (
         "SELECT max(d.ex_dividend_date) as last_date "
         "FROM us_stock_dividends d "
-        "ANY INNER JOIN us_stock_universe FINAL u ON d.ticker = u.ticker "
+        "ANY INNER JOIN us_stock_universe u FINAL ON d.ticker = u.ticker "
         "WHERE u.composite_figi = {composite_figi}"
     )
-    QUERY_GLOBAL_LATEST_EX_DATE_SQL: ClassVar[str] = "SELECT max(ex_dividend_date) as last_date FROM us_stock_dividends"
+    QUERY_GLOBAL_LATEST_EX_DATE_SQL: ClassVar[str] = (
+        "SELECT max(ex_dividend_date) as last_date FROM us_stock_dividends"
+    )
 
     @classmethod
     def build_query_latest_ex_date_by_figi_sql(cls, composite_figi: str) -> str:
@@ -70,7 +73,9 @@ class UsStockDividendsModel(BaseClickHouseModel):
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
 
-        str_cols = {k: v.get("len") for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "str"}
+        str_cols = {
+            k: v.get("len") for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "str"
+        }
         for col, length in str_cols.items():
             # 拦截 DB 查询返回的 FixedString(bytes) 格式，显式解码
             df[col] = df[col].apply(

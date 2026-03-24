@@ -3,6 +3,7 @@ from src.model.base_clickhouse_model import BaseClickHouseModel
 import pandas as pd
 from typing import ClassVar, Dict, Any
 
+
 def _get_sec_ddl(table_name):
     return f"""
         CREATE TABLE IF NOT EXISTS {table_name}
@@ -32,6 +33,7 @@ def _get_sec_ddl(table_name):
         ORDER BY (issuer_cik, issuer_ticker, acceptance_datetime, reporting_owner_name, filing_date, transaction_date, transaction_code, transaction_shares)
     """
 
+
 def _get_state_ddl(table_name):
     return f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
@@ -41,6 +43,7 @@ def _get_state_ddl(table_name):
         ) ENGINE = ReplacingMergeTree(update_time) ORDER BY (composite_figi)
     """
 
+
 class _SecFormBase(BaseClickHouseModel):
     FORM345_UNION_SQL: ClassVar[str] = (
         "SELECT * FROM sec_form3_insider_transactions "
@@ -49,15 +52,16 @@ class _SecFormBase(BaseClickHouseModel):
         "UNION ALL "
         "SELECT * FROM sec_form5_insider_transactions"
     )
-    QUERY_LATEST_TS_BY_CIK_SQL: ClassVar[str] = "SELECT issuer_cik as cik, max(acceptance_datetime) as last_ts FROM {table_name} GROUP BY issuer_cik"
+    QUERY_LATEST_TS_BY_CIK_SQL: ClassVar[str] = (
+        "SELECT issuer_cik as cik, max(acceptance_datetime) as last_ts FROM {table_name} GROUP BY issuer_cik"
+    )
     QUERY_GLOBAL_LATEST_ACCEPTANCE_DATE_SQL: ClassVar[str] = (
-        "SELECT max(acceptance_datetime) as last_date "
-        f"FROM ({FORM345_UNION_SQL}) s"
+        f"SELECT max(acceptance_datetime) as last_date FROM ({FORM345_UNION_SQL}) s"
     )
     QUERY_BY_FIGI_SQL: ClassVar[str] = (
         "SELECT s.* "
         f"FROM ({FORM345_UNION_SQL}) s "
-        "ANY INNER JOIN us_stock_universe FINAL u "
+        "ANY INNER JOIN us_stock_universe u FINAL"
         "ON right(concat('0000000000', s.issuer_cik), 10) = u.cik "
         "WHERE u.composite_figi = {figi} "
         "ORDER BY acceptance_datetime DESC "
@@ -75,7 +79,7 @@ class _SecFormBase(BaseClickHouseModel):
         "ORDER BY acceptance_datetime DESC "
         "LIMIT {limit}"
     )
-    
+
     SCHEMA_CLEAN: ClassVar[Dict[str, Any]] = {
         "issuer_ticker": {"type": "str", "default": ""},
         "issuer_cik": {"type": "str", "default": ""},
@@ -142,6 +146,7 @@ class _SecFormBase(BaseClickHouseModel):
         date_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "date"]
         for col in date_cols:
             if col in df.columns:
+
                 def _safe_date(v):
                     if pd.isna(v) or v is None or str(v).strip() in ("", "None"):
                         return pd.to_datetime("1970-01-01").date()
@@ -149,11 +154,15 @@ class _SecFormBase(BaseClickHouseModel):
                         return pd.to_datetime(v).date()
                     except Exception:
                         return pd.to_datetime("1970-01-01").date()
+
                 df[col] = df[col].apply(_safe_date)
 
-        datetime_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "datetime64"]
+        datetime_cols = [
+            k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "datetime64"
+        ]
         for col in datetime_cols:
             if col in df.columns:
+
                 def _safe_datetime(v):
                     if pd.isna(v) or v is None or str(v).strip() in ("", "None"):
                         return pd.to_datetime("1970-01-01 00:00:00").tz_localize("UTC")
@@ -164,9 +173,12 @@ class _SecFormBase(BaseClickHouseModel):
                         return dt
                     except Exception:
                         return pd.to_datetime("1970-01-01 00:00:00").tz_localize("UTC")
+
                 df[col] = df[col].apply(_safe_datetime)
 
-        str_cols = {k: v.get("len") for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "str"}
+        str_cols = {
+            k: v.get("len") for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "str"
+        }
         for col, length in str_cols.items():
             if col in df.columns:
                 df[col] = df[col].astype(str).replace("None", "")
@@ -185,25 +197,31 @@ class _SecFormBase(BaseClickHouseModel):
 
         return df[list(cls.SCHEMA_CLEAN.keys())]
 
+
 class SecForm3Model(_SecFormBase):
     table_name: ClassVar[str] = "sec_form3_insider_transactions"
     __DDL__: ClassVar[str] = _get_sec_ddl("sec_form3_insider_transactions")
+
 
 class SecForm4Model(_SecFormBase):
     table_name: ClassVar[str] = "sec_form4_insider_transactions"
     __DDL__: ClassVar[str] = _get_sec_ddl("sec_form4_insider_transactions")
 
+
 class SecForm5Model(_SecFormBase):
     table_name: ClassVar[str] = "sec_form5_insider_transactions"
     __DDL__: ClassVar[str] = _get_sec_ddl("sec_form5_insider_transactions")
+
 
 class SecForm3StateModel(BaseClickHouseModel):
     table_name: ClassVar[str] = "sec_form3_insider_transactions_state"
     __DDL__: ClassVar[str] = _get_state_ddl("sec_form3_insider_transactions_state")
 
+
 class SecForm4StateModel(BaseClickHouseModel):
     table_name: ClassVar[str] = "sec_form4_insider_transactions_state"
     __DDL__: ClassVar[str] = _get_state_ddl("sec_form4_insider_transactions_state")
+
 
 class SecForm5StateModel(BaseClickHouseModel):
     table_name: ClassVar[str] = "sec_form5_insider_transactions_state"
