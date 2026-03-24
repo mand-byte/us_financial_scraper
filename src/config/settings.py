@@ -150,7 +150,7 @@ def load_settings() -> Settings:
         ),
         scraper=ScraperSettings(
             scraping_start_date=_get_str("SCRAPING_START_DATE", "2014-01-01"),
-            kline_span=max(1, _get_int("KLINE_SPAN", 5)),
+            kline_span=max(1, _get_int("KLINE_SPAN", 1)),
         ),
         logging=LoggingSettings(
             console_log_level=_get_str("CONSOLE_LOG_LEVEL", "INFO").upper(),
