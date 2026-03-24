@@ -68,7 +68,7 @@ class UsStockUniverseModel(BaseClickHouseModel):
         "SELECT "
         "    u.ticker, u.cik, u.composite_figi, u.active, u.delisted_utc, "
         "    ifNull(s.state, 0) as sync_state "
-        "FROM us_stock_universe u FINAL"
+        "FROM us_stock_universe u FINAL "
         "LEFT JOIN {state_table} s ON u.{id_column} = s.{id_column}"
     )
 
