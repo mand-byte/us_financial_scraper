@@ -114,7 +114,7 @@ class MassiveApi:
         sort_type: Optional[str] = None,
         active: Optional[bool] = None,
         order: str = "asc",
-        limit: int = 1000,
+        limit: int = 100,
     ) -> Optional[pd.DataFrame]:
         """
         :param active: active of the ticker, default is True (API default)
@@ -148,11 +148,11 @@ class MassiveApi:
     def get_historical_klines(
         self,
         ticker: str,
-        multiplier: int = 15,
+        multiplier: int = 1,
         timespan: str = "minute",
         start: str = "2014-01-01",
         end: str = "2014-01-01",
-        limit: int = 50000,
+        limit: int = 5000,
         adjusted: bool = False,
         sort: str = "asc",
     ) -> Optional[pd.DataFrame]:

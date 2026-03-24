@@ -40,8 +40,8 @@ from src.config.settings import settings
 
 class MassiveKlineScraper:
     NYC = ZoneInfo("America/New_York")
-    API_KLINE_MAX_LIMIT = 2000
-    API_TICKERS_MAX_LIMIT = 1000
+    API_KLINE_MAX_LIMIT = 5000
+    API_TICKERS_MAX_LIMIT = 100
     SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
     SEC_API_IO_MAPPING_URL = "https://api.sec-api.io/mapping/ticker/{ticker}"
 
@@ -738,7 +738,7 @@ class MassiveKlineScraper:
                     logger.warning(f"⚠️ API failed for {ticker}. Skipping.")
                     continue
                 if data_raw.empty:
-                    # 当上次拉取下市股票k线数据刚好为50000条时，本次拉取为空，补上标记为已完结
+                    # 当上次拉取下市股票k线数据刚好为api limit条时，本次拉取为空，补上标记为已完结
                     if active == 0:
                         self.repo.update_sync_status(
                             "us_minutes_klines", composite_figi, "composite_figi", 1

@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from typing import ClassVar, Dict, Any
 
+
 # ==========================================
 # 2. 个股 K线表
 # ==========================================
@@ -41,7 +42,9 @@ class UsStockMinutesKlineModel(BaseClickHouseModel):
         "otc": {"type": "uint8", "default": 0},
     }
 
-    QUERY_LATEST_TS_BY_GROUP_SQL: ClassVar[str] = "SELECT composite_figi, MAX(timestamp) as last_ts FROM us_minutes_klines GROUP BY composite_figi"
+    QUERY_LATEST_TS_BY_GROUP_SQL: ClassVar[str] = (
+        "SELECT composite_figi, MAX(timestamp) as last_ts FROM us_minutes_klines GROUP BY composite_figi"
+    )
 
     @classmethod
     def format_dataframe(cls, df: pd.DataFrame, composite_figi: str) -> pd.DataFrame:
@@ -80,10 +83,7 @@ class UsStockMinutesKlineModel(BaseClickHouseModel):
             {None: np.nan, "": np.nan, "nan": np.nan, "None": np.nan}
         )
         df["composite_figi"] = (
-            df["composite_figi"]
-            .fillna(default_figi)
-            .astype(str)
-            .str.slice(0, 12)
+            df["composite_figi"].fillna(default_figi).astype(str).str.slice(0, 12)
         )
 
         df["timestamp"] = pd.to_datetime(
@@ -92,9 +92,15 @@ class UsStockMinutesKlineModel(BaseClickHouseModel):
 
         float_cols = [k for k, v in cls.SCHEMA_CLEAN.items() if v["type"] == "float64"]
         for col in float_cols:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype("float64")
+            df[col] = (
+                pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype("float64")
+            )
 
-        df["trades_count"] = pd.to_numeric(df["trades_count"], errors="coerce").fillna(0).astype("uint64")
+        df["trades_count"] = (
+            pd.to_numeric(df["trades_count"], errors="coerce")
+            .fillna(0)
+            .astype("uint64")
+        )
         df["otc"] = df["otc"].fillna(0).replace({True: 1, False: 0}).astype("uint8")
 
         return df[list(cls.SCHEMA_CLEAN.keys())]
