@@ -20,28 +20,56 @@ Massive K线搜刮器 (MassiveDataFetcher) - 需求与逻辑文档
 ================================================================================
 """
 
-import pandas as pd
-import numpy as np
-import requests
+from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import numpy as np
+import pandas as pd
+import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
+
 from src.api import MassiveApi, OpenFIGIClient
+from src.config.settings import settings
+from src.dao.market_data_repo import MarketDataRepo
 from src.model import (
+    UsStockFigiTickerMappingModel,
     UsStockMinutesKlineModel,
     UsStockUniverseModel,
-    UsStockFigiTickerMappingModel,
 )
-from src.dao.market_data_repo import MarketDataRepo
 from src.utils.logger import app_logger as logger
-from src.config.settings import settings
+
+
+@dataclass(slots=True)
+class UniverseSyncStats:
+    total_raw: int = 0
+    total_filtered: int = 0
+    inserted_rows: int = 0
+    missing_figi_count: int = 0
+    missing_cik_count: int = 0
+
+
+@dataclass(slots=True)
+class KlineSyncTask:
+    ticker: str
+    composite_figi: str
+    active: int
+    sync_state: int
+
+
+@dataclass(slots=True)
+class KlineTaskResult:
+    inserted_rows: int = 0
+    marked_done: bool = False
+    failed: bool = False
 
 
 class MassiveKlineScraper:
     NYC = ZoneInfo("America/New_York")
     API_KLINE_MAX_LIMIT = 5000
     API_TICKERS_MAX_LIMIT = 100
+    ALLOWED_TICKER_TYPES = frozenset({"CS", "OS", "ADRC", "NYRS"})
+    KLINE_SYNC_FRESHNESS_BUFFER_MS = 60_000
     SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
     SEC_API_IO_MAPPING_URL = "https://api.sec-api.io/mapping/ticker/{ticker}"
 
@@ -53,6 +81,34 @@ class MassiveKlineScraper:
         self.COLD_START_DATE = settings.scraper.scraping_start_date
         self._sec_ticker_cik_map: dict[str, str] | None = None
         self._sec_api_cik_cache: dict[str, str] = {}
+
+    @staticmethod
+    def _decode_text(value: object) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", "ignore")
+        if value is None or pd.isna(value):
+            return ""
+
+        text = str(value)
+        return "" if text in {"nan", "None"} else text
+
+    @classmethod
+    def _missing_text_mask(cls, series: pd.Series) -> pd.Series:
+        normalized = series.apply(cls._decode_text)
+        return normalized.eq("")
+
+    @classmethod
+    def _normalize_text_series(cls, series: pd.Series) -> pd.Series:
+        return series.apply(cls._decode_text)
+
+    @staticmethod
+    def _to_int(value: object, default: int = 0) -> int:
+        try:
+            if value is None or pd.isna(value):
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     def _fetch_tickers_by_active(self, active: bool) -> pd.DataFrame | None:
         frames: list[pd.DataFrame] = []
@@ -400,388 +456,416 @@ class MassiveKlineScraper:
         if df.empty:
             return df
 
-        picked_rows: list[pd.Series] = []
-        for _, group in df.groupby("composite_figi", sort=False):
-            active_values = set(
-                pd.to_numeric(group["active"], errors="coerce").fillna(0).astype(int)
+        dedup_df = df.copy()
+        dedup_df["_active_rank"] = (
+            pd.to_numeric(dedup_df["active"], errors="coerce").fillna(0).astype(int)
+        )
+        dedup_df = dedup_df.sort_values(
+            by=["composite_figi", "_active_rank", "last_updated_utc", "ticker"],
+            ascending=[True, False, False, False],
+            kind="stable",
+        )
+        dedup_df = dedup_df.drop_duplicates(subset=["composite_figi"], keep="first")
+        return dedup_df.drop(columns=["_active_rank"]).reset_index(drop=True)
+
+    def _load_existing_universe(self) -> pd.DataFrame:
+        existing_df = self.repo.get_universe_tickers()
+        if existing_df.empty:
+            return pd.DataFrame()
+        return UsStockUniverseModel.format_dataframe(existing_df)
+
+    def _fetch_full_stock_universe_raw(self) -> pd.DataFrame | None:
+        logger.debug("正在通过 ticker 顺序迭代拉取全量 Ticker 列表...")
+
+        active_df = self._fetch_tickers_by_active(active=True)
+        if active_df is None:
+            return None
+
+        inactive_df = self._fetch_tickers_by_active(active=False)
+        if inactive_df is None:
+            return None
+
+        universe_parts = [df for df in [active_df, inactive_df] if not df.empty]
+        if not universe_parts:
+            logger.error("Massive: api 返回为空，等待调度器下次运行")
+            return pd.DataFrame()
+
+        return pd.concat(universe_parts, ignore_index=True)
+
+    def _filter_stock_universe(self, universe_raw: pd.DataFrame) -> pd.DataFrame:
+        if universe_raw.empty or "type" not in universe_raw.columns:
+            return universe_raw.copy()
+
+        filtered_df = universe_raw.copy()
+        filtered_df["type"] = self._normalize_text_series(filtered_df["type"]).str.upper()
+
+        before_count = len(filtered_df)
+        filtered_df = filtered_df[
+            filtered_df["type"].isin(self.ALLOWED_TICKER_TYPES)
+        ].copy()
+
+        logger.debug(
+            f"✂️ 已过滤为 {sorted(self.ALLOWED_TICKER_TYPES)}，剩余 {len(filtered_df)} / {before_count} 个 Ticker。"
+        )
+        return filtered_df
+
+    def _inherit_universe_identifiers(
+        self, universe_df: pd.DataFrame, existing_df: pd.DataFrame
+    ) -> pd.DataFrame:
+        if universe_df.empty or existing_df.empty:
+            return universe_df
+
+        inherited_df = universe_df.copy()
+        existing = existing_df.copy()
+
+        inherited_df["ticker"] = self._normalize_text_series(inherited_df["ticker"])
+        inherited_df["composite_figi"] = self._normalize_text_series(
+            inherited_df["composite_figi"]
+        ).replace({"": np.nan})
+        inherited_df["cik"] = self._normalize_text_series(inherited_df["cik"]).replace(
+            {"": np.nan}
+        )
+
+        existing["ticker"] = self._normalize_text_series(existing["ticker"])
+        existing["composite_figi"] = self._normalize_text_series(
+            existing["composite_figi"]
+        ).replace({"": np.nan})
+        existing["cik"] = self._normalize_text_series(existing["cik"]).replace(
+            {"": np.nan}
+        )
+
+        ticker_to_figi = (
+            existing.loc[existing["composite_figi"].notna(), ["ticker", "composite_figi"]]
+            .drop_duplicates(subset=["ticker"])
+            .set_index("ticker")["composite_figi"]
+            .to_dict()
+        )
+        if ticker_to_figi:
+            inherited_df["composite_figi"] = inherited_df["composite_figi"].fillna(
+                inherited_df["ticker"].map(ticker_to_figi)
             )
-            if len(active_values) == 1:
-                chosen = group.sort_values(
-                    by=["last_updated_utc", "ticker"],
-                    ascending=[False, False],
-                    kind="stable",
-                ).iloc[0]
-            else:
-                active_group = group[
-                    pd.to_numeric(group["active"], errors="coerce")
-                    .fillna(0)
-                    .astype(int)
-                    == 1
+
+        figi_to_cik = (
+            existing.loc[
+                existing["cik"].notna() & existing["composite_figi"].notna(),
+                ["composite_figi", "cik"],
+            ]
+            .drop_duplicates(subset=["composite_figi"])
+            .set_index("composite_figi")["cik"]
+            .to_dict()
+        )
+        if figi_to_cik:
+            inherited_df["cik"] = inherited_df["cik"].fillna(
+                inherited_df["composite_figi"].map(figi_to_cik)
+            )
+
+        ticker_to_cik = (
+            existing.loc[existing["cik"].notna(), ["ticker", "cik"]]
+            .drop_duplicates(subset=["ticker"])
+            .set_index("ticker")["cik"]
+            .to_dict()
+        )
+        if ticker_to_cik:
+            inherited_df["cik"] = inherited_df["cik"].fillna(
+                inherited_df["ticker"].map(ticker_to_cik)
+            )
+
+        return inherited_df
+
+    def _enrich_missing_universe_identifiers(self, universe_df: pd.DataFrame) -> pd.DataFrame:
+        if universe_df.empty:
+            return universe_df
+
+        enriched_df = universe_df.copy()
+        enriched_df["composite_figi"] = self._normalize_text_series(
+            enriched_df["composite_figi"]
+        ).replace({"": np.nan})
+        enriched_df["cik"] = self._normalize_text_series(enriched_df["cik"]).replace(
+            {"": np.nan}
+        )
+
+        missing_figi_mask = enriched_df["composite_figi"].isna()
+        if missing_figi_mask.any():
+            pending_figi_df = enriched_df.loc[missing_figi_mask].copy()
+            logger.debug(f"发现 {len(pending_figi_df)} 条记录缺失 FIGI，执行补全...")
+            figi_enriched_df = self.enrich_figi(pending_figi_df)
+            figi_map = (
+                figi_enriched_df.assign(
+                    ticker=self._normalize_text_series(figi_enriched_df["ticker"]),
+                    composite_figi=self._normalize_text_series(
+                        figi_enriched_df["composite_figi"]
+                    ),
+                )
+                .loc[
+                    lambda df: df["composite_figi"].ne(""),
+                    ["ticker", "composite_figi"],
                 ]
-                if active_group.empty:
-                    chosen = group.sort_values(
-                        by=["last_updated_utc", "ticker"],
-                        ascending=[False, False],
-                        kind="stable",
-                    ).iloc[0]
-                else:
-                    chosen = active_group.sort_values(
-                        by=["last_updated_utc", "ticker"],
-                        ascending=[False, False],
-                        kind="stable",
-                    ).iloc[0]
-            picked_rows.append(chosen)
-
-        return pd.DataFrame(picked_rows).reset_index(drop=True)
-
-    def load_stock_universe(self):
-        """
-        通过首字母全量拉取股票宇宙表 (使用 ticker.gt 鲁棒迭代)
-        """
-        logger.info("Massive Universe 同步开始。")
-        total_raw = 0
-        total_filtered = 0
-        inserted_rows = 0
-        missing_figi_count = 0
-        missing_cik_count = 0
-
-        old_df = self.repo.get_universe_tickers()
-        if not old_df.empty:
-            # 立即清洗老数据，防止 ClickHouse 返回的 bytes 类型污染后续处理流
-            old_df = UsStockUniverseModel.format_dataframe(old_df)
-        try:
-            # 1. 全量抓取股票 (不区分活跃状态，由 API 或后续逻辑统一处理)
-            logger.debug("正在通过 ticker 顺序迭代拉取全量 Ticker 列表...")
-            active_df = self._fetch_tickers_by_active(active=True)
-            if active_df is None:
-                return
-            inactive_df = self._fetch_tickers_by_active(active=False)
-            if inactive_df is None:
-                return
-
-            all_tickers_dfs = [df for df in [active_df, inactive_df] if not df.empty]
-
-            if not all_tickers_dfs:
-                logger.error("Massive: api 返回为空，等待调度器下次运行")
-                return
-            all_tickers_raw = pd.concat(all_tickers_dfs, ignore_index=True)
-            total_raw = len(all_tickers_raw)
-
-            # 【过滤】仅保留业务需要的 4 种标的类型
-            if "type" in all_tickers_raw.columns:
-                before_count = len(all_tickers_raw)
-                all_tickers_raw["type"] = all_tickers_raw["type"].apply(
-                    lambda x: x.decode("utf-8", "ignore")
-                    if isinstance(x, bytes)
-                    else x
-                )
-                all_tickers_raw["type"] = (
-                    all_tickers_raw["type"].astype(str).str.upper()
-                )
-                allowed_types = {"CS", "OS", "ADRC", "NYRS"}
-                all_tickers_raw = all_tickers_raw[
-                    all_tickers_raw["type"].isin(allowed_types)
-                ].copy()
-                after_count = len(all_tickers_raw)
-                logger.debug(
-                    f"✂️ 已过滤为 {sorted(allowed_types)}，剩余 {after_count} / {before_count} 个 Ticker。"
-                )
-            total_filtered = len(all_tickers_raw)
-
-            logger.debug(
-                f"本次宇宙表同步准备更新，共计处理 {total_filtered} 个 Ticker。"
+                .drop_duplicates(subset=["ticker"])
+                .set_index("ticker")["composite_figi"]
+                .to_dict()
             )
-
-            all_tickers = UsStockUniverseModel.format_dataframe(all_tickers_raw)
-
-            # 3. 继承老表的 FIGI (基于 Ticker 映射)
-            # 这一步是为了避免给 OpenFIGI 增加不必要的负担
-            if not old_df.empty:
-                # 确保 FIGI 是字符串类型，防止 bytes 导致字典主键匹配失败
-                old_df["composite_figi"] = old_df["composite_figi"].apply(
-                    lambda x: (
-                        x.decode("utf-8")
-                        if isinstance(x, bytes)
-                        else str(x)
-                        if pd.notna(x)
-                        else ""
-                    )
-                )
-                ticker_to_figi = old_df.set_index("ticker")["composite_figi"].to_dict()
-                # 统一处理空值，确保 fillna 生效
-                all_tickers["composite_figi"] = all_tickers["composite_figi"].replace(
-                    {"": np.nan, None: np.nan}
-                )
-                all_tickers["composite_figi"] = all_tickers["composite_figi"].fillna(
-                    all_tickers["ticker"].map(ticker_to_figi)
+            if figi_map:
+                enriched_df["composite_figi"] = enriched_df["composite_figi"].fillna(
+                    enriched_df["ticker"].map(figi_map)
                 )
 
-                # 继承老表已有的 CIK，优先用 FIGI，再回退到 ticker。
-                old_df["cik"] = old_df["cik"].apply(
-                    lambda x: (
-                        x.decode("utf-8")
-                        if isinstance(x, bytes)
-                        else str(x)
-                        if pd.notna(x)
-                        else ""
-                    )
+        missing_cik_mask = enriched_df["cik"].isna()
+        if missing_cik_mask.any():
+            pending_cik_df = enriched_df.loc[missing_cik_mask].copy()
+            logger.debug(f"发现 {len(pending_cik_df)} 条记录缺失 CIK，执行补全...")
+            cik_enriched_df = self.enrich_cik(pending_cik_df)
+            cik_map = (
+                cik_enriched_df.assign(
+                    ticker=self._normalize_text_series(cik_enriched_df["ticker"]),
+                    cik=self._normalize_text_series(cik_enriched_df["cik"]),
                 )
-                old_df["cik"] = old_df["cik"].replace({"nan": "", None: ""})
-                old_df["composite_figi"] = old_df["composite_figi"].replace(
-                    {"nan": "", None: ""}
-                )
-
-                figi_to_cik = old_df.loc[
-                    old_df["cik"] != "", ["composite_figi", "cik"]
-                ].drop_duplicates(subset=["composite_figi"])
-                ticker_to_cik = old_df.loc[
-                    old_df["cik"] != "", ["ticker", "cik"]
-                ].drop_duplicates(subset=["ticker"])
-
-                if not figi_to_cik.empty:
-                    all_tickers["cik"] = all_tickers["cik"].replace(
-                        {"": np.nan, None: np.nan}
-                    )
-                    all_tickers["cik"] = all_tickers["cik"].fillna(
-                        all_tickers["composite_figi"].map(
-                            figi_to_cik.set_index("composite_figi")["cik"].to_dict()
-                        )
-                    )
-
-                if not ticker_to_cik.empty:
-                    all_tickers["cik"] = all_tickers["cik"].replace(
-                        {"": np.nan, None: np.nan}
-                    )
-                    all_tickers["cik"] = all_tickers["cik"].fillna(
-                        all_tickers["ticker"].map(
-                            ticker_to_cik.set_index("ticker")["cik"].to_dict()
-                        )
-                    )
-
-            # 4. 找出真正缺失 FIGI 的行进行补全
-            # 只要是新 Ticker 或者 依然没有 FIGI 的记录，都需要去 OpenFIGI 跑一趟
-            missing_figi_mask = (
-                (all_tickers["composite_figi"].isna())
-                | (all_tickers["composite_figi"] == "")
-                | (all_tickers["composite_figi"] == "nan")
+                .loc[lambda df: df["cik"].ne(""), ["ticker", "cik"]]
+                .drop_duplicates(subset=["ticker"])
+                .set_index("ticker")["cik"]
+                .to_dict()
             )
-
-            if missing_figi_mask.any():
-                pending_df = all_tickers[missing_figi_mask].copy()
-                logger.debug(f"发现 {len(pending_df)} 条记录缺失 FIGI，执行补全...")
-
-                # 补全后的数据
-                enriched_part = self.enrich_figi(pending_df)
-
-                # 【优化点】将补全后的 FIGI 写回 all_tickers 总表
-                enriched_map = enriched_part.set_index("ticker")[
-                    "composite_figi"
-                ].to_dict()
-                # 统一空字符串为 NaN，确保 fillna 能覆盖所有缺失情况
-                all_tickers["composite_figi"] = all_tickers["composite_figi"].replace(
-                    {"": np.nan, "nan": np.nan}
-                )
-                all_tickers["composite_figi"] = all_tickers["composite_figi"].fillna(
-                    all_tickers["ticker"].map(enriched_map)
+            if cik_map:
+                enriched_df["cik"] = enriched_df["cik"].fillna(
+                    enriched_df["ticker"].map(cik_map)
                 )
 
-            # 4.1 继承旧值后，剩余缺失 CIK 的行用 Massive ticker events 补齐
-            missing_cik_mask = (
-                all_tickers["cik"].isna()
-                | (all_tickers["cik"] == "")
-                | (all_tickers["cik"] == "nan")
-            )
-            if missing_cik_mask.any():
-                pending_cik_df = all_tickers[missing_cik_mask].copy()
-                logger.debug(f"发现 {len(pending_cik_df)} 条记录缺失 CIK，执行补全...")
-                enriched_cik_part = self.enrich_cik(pending_cik_df)
-                enriched_cik_map = enriched_cik_part.set_index("ticker")[
-                    "cik"
-                ].to_dict()
-                all_tickers["cik"] = all_tickers["cik"].replace(
-                    {"": np.nan, "nan": np.nan}
-                )
-                all_tickers["cik"] = all_tickers["cik"].fillna(
-                    all_tickers["ticker"].map(enriched_cik_map)
-                )
+        return enriched_df
 
-            # 经过 FIGI / CIK 回填后，再统一跑一次格式化，避免 float NaN 混入字符串列。
-            all_tickers = UsStockUniverseModel.format_dataframe(all_tickers)
+    def _prepare_universe_for_insert(
+        self, universe_df: pd.DataFrame
+    ) -> tuple[pd.DataFrame, int, int]:
+        formatted_df = UsStockUniverseModel.format_dataframe(universe_df)
+        final_to_insert = formatted_df.loc[
+            ~self._missing_text_mask(formatted_df["composite_figi"])
+        ].copy()
 
-            # 5. 过滤掉最终还是没有 FIGI 的非法记录（主键不能为空）
-            # 剩下的就是：全新的、补齐的、以及需要更新元数据的存量记录
-            final_to_insert = all_tickers[
-                all_tickers["composite_figi"].notna()
-                & (all_tickers["composite_figi"] != "")
-            ].copy()
-
-            # 同一 FIGI 可能对应历史旧 ticker 与当前 ticker（如 SCH / SCHW）。
-            # Universe 表主键是 composite_figi，入库前必须折叠为 1 条并优先保留 active=1。
-            if not final_to_insert.empty:
-                before_dedup_count = len(final_to_insert)
-                final_to_insert = self._deduplicate_by_figi(final_to_insert)
-                dropped_same_figi = before_dedup_count - len(final_to_insert)
-                if dropped_same_figi > 0:
-                    logger.warning(
-                        f"发现 {dropped_same_figi} 条 FIGI 重复记录，已按 active/last_updated/ticker 优先级折叠。"
-                    )
-
-                # 折叠后再做一次格式化，避免 groupby / DataFrame 重建把列 dtype 重新污染成 float。
-                final_to_insert = UsStockUniverseModel.format_dataframe(final_to_insert)
-
-            no_figi_count = len(all_tickers) - len(final_to_insert)
-            missing_figi_count = no_figi_count
-            missing_cik_count = int(
-                (
-                    final_to_insert["cik"].isna()
-                    | (final_to_insert["cik"] == "")
-                    | (final_to_insert["cik"] == "nan")
-                ).sum()
-            )
-            if no_figi_count > 0:
-                no_figi_df = all_tickers[
-                    all_tickers["composite_figi"].isna()
-                    | (all_tickers["composite_figi"] == "")
-                ]
+        if not final_to_insert.empty:
+            before_dedup_count = len(final_to_insert)
+            final_to_insert = self._deduplicate_by_figi(final_to_insert)
+            dropped_same_figi = before_dedup_count - len(final_to_insert)
+            if dropped_same_figi > 0:
                 logger.warning(
-                    f"⚠️ 最终仍有 {no_figi_count} 个 Ticker 缺失 FIGI (大多为特殊标的)，将跳过入库。示例：{no_figi_df.head(5)}"
+                    f"发现 {dropped_same_figi} 条 FIGI 重复记录，已按 active/last_updated/ticker 优先级折叠。"
                 )
+            final_to_insert = UsStockUniverseModel.format_dataframe(final_to_insert)
 
-            if not final_to_insert.empty:
-                # 6. 全量/增量写入（ReplacingMergeTree 会自动根据 FIGI 处理新增或更新）
-                self.repo.insert_stock_universe(final_to_insert)
-                inserted_rows = len(final_to_insert)
+        missing_figi_count = len(formatted_df) - len(final_to_insert)
+        missing_cik_count = (
+            int(self._missing_text_mask(final_to_insert["cik"]).sum())
+            if not final_to_insert.empty
+            else 0
+        )
+        return final_to_insert, missing_figi_count, missing_cik_count
 
-                # 7. 只有真正“新出现”的 Ticker 或变动，以及 Mapping 表为空时，才去跑 Mapping 历史
-                is_mapping_empty = self.repo.is_mapping_table_empty()
-                if old_df.empty or is_mapping_empty:
-                    if is_mapping_empty:
-                        logger.debug("检测到 FIGI 映射表为空，开始执行存量补全...")
-                    self.load_all_figi_ticker_mapping(final_to_insert)
-                else:
-                    new_tickers = final_to_insert[
-                        ~final_to_insert["ticker"].isin(old_df["ticker"])
-                    ]
-                    if not new_tickers.empty:
-                        self.load_all_figi_ticker_mapping(new_tickers)
+    def _log_missing_universe_figi(self, universe_df: pd.DataFrame) -> None:
+        missing_figi_df = universe_df.loc[
+            self._missing_text_mask(universe_df["composite_figi"]),
+            ["ticker", "name", "type"],
+        ].copy()
+        if missing_figi_df.empty:
+            return
 
-        except Exception as e:
-            logger.error(f"宇宙表同步失败: {e}", exc_info=True)
+        sample = missing_figi_df.head(5).to_dict("records")
+        logger.warning(
+            f"⚠️ 最终仍有 {len(missing_figi_df)} 个 Ticker 缺失 FIGI，将跳过入库。示例：{sample}"
+        )
+
+    def _sync_figi_mapping_history(
+        self, final_to_insert: pd.DataFrame, existing_df: pd.DataFrame
+    ) -> None:
+        if final_to_insert.empty:
+            return
+
+        is_mapping_empty = self.repo.is_mapping_table_empty()
+        if existing_df.empty or is_mapping_empty:
+            if is_mapping_empty:
+                logger.debug("检测到 FIGI 映射表为空，开始执行存量补全...")
+            self.load_all_figi_ticker_mapping(final_to_insert)
+            return
+
+        known_tickers = set(self._normalize_text_series(existing_df["ticker"]))
+        new_tickers = final_to_insert.loc[
+            ~self._normalize_text_series(final_to_insert["ticker"]).isin(known_tickers)
+        ].copy()
+        if not new_tickers.empty:
+            self.load_all_figi_ticker_mapping(new_tickers)
+
+    def load_stock_universe(self) -> None:
+        """全量刷新股票宇宙，并在入库前完成 FIGI/CIK 继承、补全和去重。"""
+        logger.info("Massive Universe 同步开始。")
+        stats = UniverseSyncStats()
+
+        try:
+            existing_df = self._load_existing_universe()
+            universe_raw = self._fetch_full_stock_universe_raw()
+            if universe_raw is None or universe_raw.empty:
+                return
+
+            stats.total_raw = len(universe_raw)
+            filtered_universe = self._filter_stock_universe(universe_raw)
+            stats.total_filtered = len(filtered_universe)
+            logger.debug(f"本次宇宙表同步准备更新，共计处理 {stats.total_filtered} 个 Ticker。")
+
+            universe_df = UsStockUniverseModel.format_dataframe(filtered_universe)
+            universe_df = self._inherit_universe_identifiers(universe_df, existing_df)
+            universe_df = self._enrich_missing_universe_identifiers(universe_df)
+
+            final_to_insert, stats.missing_figi_count, stats.missing_cik_count = (
+                self._prepare_universe_for_insert(universe_df)
+            )
+
+            if stats.missing_figi_count > 0:
+                self._log_missing_universe_figi(universe_df)
+
+            if final_to_insert.empty:
+                logger.warning("Massive Universe 本轮没有可入库记录。")
+                return
+
+            self.repo.insert_stock_universe(final_to_insert)
+            stats.inserted_rows = len(final_to_insert)
+            self._sync_figi_mapping_history(final_to_insert, existing_df)
+
+        except Exception as exc:
+            logger.error(f"宇宙表同步失败: {exc}", exc_info=True)
         else:
             logger.info(
-                f"✅ Massive Universe 本轮完成: 原始={total_raw} 过滤后={total_filtered} "
-                f"入库={inserted_rows} 缺失FIGI跳过={missing_figi_count} "
-                f"缺失CIK保留={missing_cik_count}"
+                f"✅ Massive Universe 本轮完成: 原始={stats.total_raw} 过滤后={stats.total_filtered} "
+                f"入库={stats.inserted_rows} 缺失FIGI跳过={stats.missing_figi_count} "
+                f"缺失CIK保留={stats.missing_cik_count}"
             )
 
-    def fetch_klines(self):
-        """
-        流式消费补齐任务。
-        1. 从 get_sync_tasks 获取所有 ticker 的任务列表 (包含 sync_state)
-        2. 批量获取每只股票在 us_minutes_klines 中的最新时间戳
-        3. 从最新时间戳拉取到现在，冷启动时从 COLD_START_DATE 开始
-        4. active=0 + 总返回数据量 < limit → 标记 state=1
-        """
-        logger.info("🚀 启动 K 线增量拉取...")
-        total_tasks = 0
-        inserted_rows = 0
-        failed_tickers = 0
-        marked_done = 0
-
-        # 1. 获取任务列表
-        tasks_df = self.repo.get_sync_tasks(
-            "us_minutes_klines", id_column="composite_figi"
-        )
-        if tasks_df.empty:
-            logger.debug("无 K 线拉取任务。")
-            return
-        total_tasks = len(tasks_df)
-
-        # 2. 批量获取每只股票在 us_minutes_klines 中的最新时间戳
+    def _build_latest_kline_ts_map(self) -> dict[str, int]:
         latest_ts_df = self.repo.get_all_stocks_latest_ts_df_by_group()
-        ts_map = {}  # composite_figi -> last_ts (ms)
-        if not latest_ts_df.empty:
-            for _, r in latest_ts_df.iterrows():
-                if pd.notna(r["last_ts"]):
-                    figi_key = (
-                        r["composite_figi"].decode("utf-8", "ignore")
-                        if isinstance(r["composite_figi"], bytes)
-                        else str(r["composite_figi"])
-                    )
-                    ts_map[figi_key] = int(
-                        pd.to_datetime(r["last_ts"]).timestamp() * 1000
-                    )
+        if latest_ts_df.empty:
+            return {}
 
-        now_ms = int(datetime.now(self.NYC).timestamp() * 1000)
-        cold_start_ms = int(
+        latest_ts_map: dict[str, int] = {}
+        for row in latest_ts_df.itertuples(index=False):
+            last_ts = getattr(row, "last_ts", None)
+            if pd.isna(last_ts):
+                continue
+
+            composite_figi = self._decode_text(getattr(row, "composite_figi", ""))
+            if not composite_figi:
+                continue
+
+            latest_ts_map[composite_figi] = int(
+                pd.to_datetime(last_ts).timestamp() * 1000
+            )
+
+        return latest_ts_map
+
+    def _build_kline_sync_task(self, row: object) -> KlineSyncTask:
+        return KlineSyncTask(
+            ticker=self._decode_text(getattr(row, "ticker", "")),
+            composite_figi=self._decode_text(getattr(row, "composite_figi", "")),
+            active=self._to_int(getattr(row, "active", 0)),
+            sync_state=self._to_int(getattr(row, "sync_state", 0)),
+        )
+
+    def _get_cold_start_ms(self) -> int:
+        return int(
             datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d")
             .replace(tzinfo=self.NYC)
             .timestamp()
             * 1000
         )
 
-        for _, row in tasks_df.iterrows():
-            # 跳过已完结的退市标的
-            if row["sync_state"] == 1:
-                continue
+    def _mark_kline_sync_done(self, composite_figi: str) -> None:
+        self.repo.update_sync_status(
+            "us_minutes_klines", composite_figi, "composite_figi", 1
+        )
 
-            ticker = row["ticker"]
-            composite_figi = (
-                row["composite_figi"].decode("utf-8", "ignore")
-                if isinstance(row["composite_figi"], bytes)
-                else str(row["composite_figi"])
+    def _sync_single_kline_task(
+        self,
+        task: KlineSyncTask,
+        latest_ts_map: dict[str, int],
+        now_ms: int,
+        cold_start_ms: int,
+    ) -> KlineTaskResult:
+        if task.sync_state == 1:
+            return KlineTaskResult()
+
+        if not task.ticker or not task.composite_figi:
+            logger.warning(f"跳过非法 K 线任务: ticker={task.ticker} figi={task.composite_figi}")
+            return KlineTaskResult(failed=True)
+
+        try:
+            start_ms = latest_ts_map.get(task.composite_figi, cold_start_ms) + 1
+            if start_ms >= now_ms - self.KLINE_SYNC_FRESHNESS_BUFFER_MS:
+                return KlineTaskResult()
+
+            data_raw = self.massive.get_historical_klines(
+                ticker=task.ticker,
+                multiplier=self.KLINE_SPAN,
+                start=str(start_ms),
+                end=str(now_ms),
+                adjusted=False,
+                limit=self.API_KLINE_MAX_LIMIT,
             )
-            active = row["active"]
+            if data_raw is None:
+                logger.warning(f"⚠️ API failed for {task.ticker}. Skipping.")
+                return KlineTaskResult()
 
-            try:
-                # 3. 确定拉取起点
-                start_ms = ts_map.get(composite_figi, cold_start_ms)
-                start_ms += 1  # +1ms 避免重复拉取最后一条
+            if data_raw.empty:
+                if task.active == 0:
+                    self._mark_kline_sync_done(task.composite_figi)
+                    return KlineTaskResult(marked_done=True)
+                return KlineTaskResult()
 
-                # 如果距当前不足 1 分钟，跳过
-                if start_ms >= now_ms - 60000:
-                    continue
-                data_raw = self.massive.get_historical_klines(
-                    ticker=ticker,
-                    multiplier=self.KLINE_SPAN,
-                    start=str(start_ms),
-                    end=str(now_ms),
-                    adjusted=False,
-                    limit=self.API_KLINE_MAX_LIMIT,
+            clean_df = UsStockMinutesKlineModel.format_dataframe(
+                data_raw, task.composite_figi
+            )
+            self.repo.insert_stock_minutes_klines(clean_df)
+
+            marked_done = False
+            if task.active == 0 and len(data_raw) < self.API_KLINE_MAX_LIMIT:
+                self._mark_kline_sync_done(task.composite_figi)
+                marked_done = True
+                logger.debug(
+                    f"🏁 {task.ticker} delisted & data exhausted ({len(data_raw)} rows). Marked state=1."
                 )
-                if data_raw is None:
-                    logger.warning(f"⚠️ API failed for {ticker}. Skipping.")
-                    continue
-                if data_raw.empty:
-                    # 当上次拉取下市股票k线数据刚好为api limit条时，本次拉取为空，补上标记为已完结
-                    if active == 0:
-                        self.repo.update_sync_status(
-                            "us_minutes_klines", composite_figi, "composite_figi", 1
-                        )
-                        marked_done += 1
 
-                    continue
+            return KlineTaskResult(
+                inserted_rows=len(clean_df),
+                marked_done=marked_done,
+            )
 
-                clean_df = UsStockMinutesKlineModel.format_dataframe(
-                    data_raw, composite_figi
-                )
-                self.repo.insert_stock_minutes_klines(clean_df)
-                inserted_rows += len(clean_df)
+        except Exception as exc:
+            logger.error(f"❌ 处理标的 {task.ticker} 异常: {exc}")
+            return KlineTaskResult(failed=True)
 
-                # 5. 退市完结判定：生成器正常跑完（无报错）+ active=0 → 数据已全部拉完
-                if active == 0 and len(data_raw) < self.API_KLINE_MAX_LIMIT:
-                    self.repo.update_sync_status(
-                        "us_minutes_klines", composite_figi, "composite_figi", 1
-                    )
-                    marked_done += 1
-                    logger.debug(
-                        f"🏁 {ticker} delisted & data exhausted ({len(data_raw)} rows). Marked state=1."
-                    )
+    def fetch_klines(self) -> None:
+        """批量拉取分钟 K 线增量数据，并对退市标的执行完成态收敛。"""
+        logger.info("🚀 启动 K 线增量拉取...")
 
-            except Exception as e:
-                failed_tickers += 1
-                logger.error(f"❌ 处理标的 {ticker} 异常: {e}")
-                continue
+        tasks_df = self.repo.get_sync_tasks(
+            "us_minutes_klines", id_column="composite_figi"
+        )
+        if tasks_df.empty:
+            logger.debug("无 K 线拉取任务。")
+            return
+
+        total_tasks = len(tasks_df)
+        inserted_rows = 0
+        failed_tickers = 0
+        marked_done = 0
+
+        latest_ts_map = self._build_latest_kline_ts_map()
+        now_ms = int(datetime.now(self.NYC).timestamp() * 1000)
+        cold_start_ms = self._get_cold_start_ms()
+
+        for row in tasks_df.itertuples(index=False):
+            task = self._build_kline_sync_task(row)
+            result = self._sync_single_kline_task(
+                task=task,
+                latest_ts_map=latest_ts_map,
+                now_ms=now_ms,
+                cold_start_ms=cold_start_ms,
+            )
+            inserted_rows += result.inserted_rows
+            marked_done += int(result.marked_done)
+            failed_tickers += int(result.failed)
 
         logger.info(
             f"✅ K线本轮完成: 任务={total_tasks} 新增行数={inserted_rows} "

@@ -1,0 +1,16 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: us-financial-scraper
+    restart: unless-stopped
+    network_mode: bridge
+    init: true
+    stop_grace_period: 30s
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./logs:/app/logs

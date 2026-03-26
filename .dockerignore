@@ -1,0 +1,14 @@
+.git
+.gitignore
+.DS_Store
+.pytest_cache
+.ruff_cache
+.venv
+__pycache__
+logs
+clickhouse_data
+clickhouse_logs
+*.pyc
+*.pyo
+*.pyd
+.env
