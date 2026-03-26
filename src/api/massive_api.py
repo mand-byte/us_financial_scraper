@@ -136,9 +136,9 @@ class MassiveApi:
         clean_params = {k: v for k, v in raw_params.items() if v is not None}
 
         try:
-            data_ = self._collect_paginated_results(endpoint, clean_params)
+            result_raw = self._collect_paginated_results(endpoint, clean_params)
 
-            return pd.DataFrame(data_)
+            return pd.DataFrame(result_raw)
 
         except Exception as e:
             app_logger.error(f"抓取 Massive 股票列表失败: {e}")
