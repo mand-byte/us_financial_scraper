@@ -605,6 +605,9 @@ class MassiveKlineScraper:
                     all_tickers["ticker"].map(enriched_cik_map)
                 )
 
+            # 经过 FIGI / CIK 回填后，再统一跑一次格式化，避免 float NaN 混入字符串列。
+            all_tickers = UsStockUniverseModel.format_dataframe(all_tickers)
+
             # 5. 过滤掉最终还是没有 FIGI 的非法记录（主键不能为空）
             # 剩下的就是：全新的、补齐的、以及需要更新元数据的存量记录
             final_to_insert = all_tickers[
@@ -622,6 +625,9 @@ class MassiveKlineScraper:
                     logger.warning(
                         f"发现 {dropped_same_figi} 条 FIGI 重复记录，已按 active/last_updated/ticker 优先级折叠。"
                     )
+
+                # 折叠后再做一次格式化，避免 groupby / DataFrame 重建把列 dtype 重新污染成 float。
+                final_to_insert = UsStockUniverseModel.format_dataframe(final_to_insert)
 
             no_figi_count = len(all_tickers) - len(final_to_insert)
             missing_figi_count = no_figi_count
