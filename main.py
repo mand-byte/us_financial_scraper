@@ -19,7 +19,7 @@ SCRAPER_SPECS = [
     ("src.yahoo_finance_macro_scraper", "YahooMacroScraper"),
     ("src.forex_factory_scraper", "ForexFactoryScraper"),
     ("src.cboe_scraper", "CboeScraper"),
-    ("src.sec_edgar_scraper", "SecEdgarScraper"),
+    # ("src.sec_edgar_scraper", "SecEdgarScraper"),
     ("src.massive_filings_disclosures_scraper", "MassiveFilingsDisclosuresScraper"),
 ]
 
