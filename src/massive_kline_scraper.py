@@ -467,15 +467,24 @@ class MassiveKlineScraper:
             all_tickers_raw = pd.concat(all_tickers_dfs, ignore_index=True)
             total_raw = len(all_tickers_raw)
 
-            # 【过滤】仅保留普通股 (CS) 和 ADR (ADRC)，剔除权证、优先股、单元等
+            # 【过滤】仅保留业务需要的 4 种标的类型
             if "type" in all_tickers_raw.columns:
                 before_count = len(all_tickers_raw)
+                all_tickers_raw["type"] = all_tickers_raw["type"].apply(
+                    lambda x: x.decode("utf-8", "ignore")
+                    if isinstance(x, bytes)
+                    else x
+                )
+                all_tickers_raw["type"] = (
+                    all_tickers_raw["type"].astype(str).str.upper()
+                )
+                allowed_types = {"CS", "OS", "ADRC", "NYRS"}
                 all_tickers_raw = all_tickers_raw[
-                    all_tickers_raw["type"].isin(["CS", "ADRC"])
-                ]
+                    all_tickers_raw["type"].isin(allowed_types)
+                ].copy()
                 after_count = len(all_tickers_raw)
                 logger.debug(
-                    f"✂️ 已过滤非标准股票 (Warrant/PFD/Unit等)，剩余 {after_count} / {before_count} 个 Ticker。"
+                    f"✂️ 已过滤为 {sorted(allowed_types)}，剩余 {after_count} / {before_count} 个 Ticker。"
                 )
             total_filtered = len(all_tickers_raw)
 
