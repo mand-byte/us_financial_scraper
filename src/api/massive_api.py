@@ -68,12 +68,6 @@ class MassiveApi:
         self, endpoint: str, params: Optional[dict] = None
     ) -> list[dict]:
         all_results: list[dict] = []
-        result_limit: Optional[int] = None
-        if params and params.get("limit") is not None:
-            try:
-                result_limit = max(1, int(params["limit"]))
-            except (TypeError, ValueError):
-                result_limit = None
 
         data_ = self.request("GET", endpoint, params)
         pages = 0
@@ -82,12 +76,6 @@ class MassiveApi:
         while True:
             pages += 1
             all_results.extend(data_.get("results", []))
-            # if result_limit is not None and len(all_results) >= result_limit:
-            #     # 保护策略：达到本轮 limit 后立即返回，剩余分页留给下次调度
-            #     app_logger.debug(
-            #         f"Massive API 达到本轮 limit={result_limit}，提前结束分页。"
-            #     )
-            #     return all_results[:result_limit]
             next_url = data_.get("next_url")
             if not next_url:
                 break
@@ -96,11 +84,6 @@ class MassiveApi:
                     f"Massive API next_url 重复，提前停止分页: {next_url}"
                 )
                 break
-            # if pages >= self.MAX_PAGES_PER_REQUEST:
-            #     app_logger.warning(
-            #         f"Massive API 分页超过上限 {self.MAX_PAGES_PER_REQUEST}，提前停止以防失控。"
-            #     )
-            #     break
             seen_next_urls.add(next_url)
             data_ = self.request("GET", next_url)
 
