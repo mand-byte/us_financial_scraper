@@ -10,8 +10,7 @@ _EXPORT_MAP = {
     "MassiveBenchmarkScraper": ("src.massive_benchmark_scraper", "MassiveBenchmarkScraper"),
     "MassiveFundamentalsScraper": ("src.massive_fundamentals_scraper", "MassiveFundamentalsScraper"),
     "MassiveKlineScraper": ("src.massive_kline_scraper", "MassiveKlineScraper"),
-    "MassiveNewsScraper": ("src.massive_news_scraper", "MassiveNewsScraper"),
-    "SecEdgarScraper": ("src.sec_edgar_scraper", "SecEdgarScraper")
+    "MassiveNewsScraper": ("src.massive_news_scraper", "MassiveNewsScraper")
 }
 
 
