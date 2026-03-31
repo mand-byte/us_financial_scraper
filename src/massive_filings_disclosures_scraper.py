@@ -6,7 +6,6 @@ from src.config.settings import settings
 from apscheduler.schedulers.blocking import BlockingScheduler
 from src.api.massive_api import MassiveApi
 from src.dao.fundamental_repo import FundamentalRepo
-from src.model.us_stock_10k_sections_raw_model import UsStock10kSectionsRawModel
 from src.model.us_stock_risk_factors_model import UsStockRiskFactorsModel
 from src.model.us_stock_risk_taxonomy_model import UsStockRiskTaxonomyModel
 from src.utils.logger import app_logger as logger
@@ -62,44 +61,7 @@ class MassiveFilingsDisclosuresScraper:
                 pass
         logger.info("🛑 Massive Filings & Disclosures 搜刮器停止。")
 
-    def sync_10k_sections(self) -> int:
-        last_date = self.fundamental_repo.get_global_latest_10k_sections_date()
-        if last_date is None:
-             last_date = datetime.strptime(self.COLD_START_DATE, "%Y-%m-%d").date()
-             logger.debug(f"10-K Sections 初次同步，使用冷启动日期: {self.COLD_START_DATE}")
-
-        date_str = last_date.strftime("%Y-%m-%d")
-        logger.debug(f"拉取 10-K sections 数据 (起: {date_str})...")
-        
-        df_raw = self.massive.get_stock_10k_sections(
-            period_end_gte=date_str, limit=1000
-        )
-
-        if df_raw is None or df_raw.empty:
-            logger.debug("10-K Sections 数据无新增。")
-            return 0
-
-        if "ticker" not in df_raw.columns:
-            return 0
-            
-        df_raw = df_raw.dropna(subset=["ticker"])
-        
-        clean_df = UsStock10kSectionsRawModel.format_dataframe(df_raw)
-        if not clean_df.empty:
-            before = len(clean_df)
-            clean_df = clean_df[
-                (clean_df["ticker"].astype(str).str.len() > 0)
-                & (clean_df["section"].astype(str).str.len() > 0)
-            ]
-            clean_df = clean_df.dropna(subset=["filing_date", "period_end"])
-            dropped = before - len(clean_df)
-            if dropped > 0:
-                logger.warning(f"⚠️ 10-K Sections 清洗后丢弃 {dropped} 条异常记录。")
-        if not clean_df.empty:
-            self.fundamental_repo.insert_stock_10k_sections_raw(clean_df)
-        logger.debug(f"10-K Sections 数据拉取完成，新增 {len(clean_df)} 条记录。")
-        return len(clean_df)
-
+    
     def sync_risk_factors(self) -> int:
         last_date = self.fundamental_repo.get_global_latest_risk_factors_date()
         if last_date is None:
@@ -159,10 +121,9 @@ class MassiveFilingsDisclosuresScraper:
         return len(clean_df)
 
     def refresh_incremental_filings(self):
-        rows_10k = self.sync_10k_sections()
         rows_rf = self.sync_risk_factors()
         logger.info(
-            f"✅ Filings 增量本轮完成: 10K_sections={rows_10k} risk_factors={rows_rf}"
+            f"✅ Filings 增量本轮完成: risk_factors={rows_rf}"
         )
 
     def refresh_all(self):

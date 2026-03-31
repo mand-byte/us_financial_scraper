@@ -8,12 +8,6 @@ _EXPORT_MAP = {
     ),
 
     "UsStockStateModel": ("src.model.us_stock_state_model", "UsStockStateModel"),
-    "SecForm3Model": ("src.model.sec_form345_model", "SecForm3Model"),
-    "SecForm4Model": ("src.model.sec_form345_model", "SecForm4Model"),
-    "SecForm5Model": ("src.model.sec_form345_model", "SecForm5Model"),
-    "SecForm3StateModel": ("src.model.sec_form345_model", "SecForm3StateModel"),
-    "SecForm4StateModel": ("src.model.sec_form345_model", "SecForm4StateModel"),
-    "SecForm5StateModel": ("src.model.sec_form345_model", "SecForm5StateModel"),
 
     "GdeltMacroSentimentModel": (
         "src.model.gdelt_macro_sentiment_model",

@@ -107,12 +107,6 @@ class FundamentalRepo:
             app_logger.error(f"全局股票拆分时间查询失败: {e}")
             return None
 
-    def insert_stock_10k_sections_raw(self, df: pd.DataFrame) -> None:
-        try:
-            self.db.client.insert_df("us_stock_10k_sections_raw", df)
-        except Exception as e:
-            app_logger.error(f"插入 us_stock_10k_sections_raw 失败: {e}")
-            raise
 
     def insert_stock_risk_factors(self, df: pd.DataFrame) -> None:
         try:
@@ -127,19 +121,6 @@ class FundamentalRepo:
         except Exception as e:
             app_logger.error(f"插入 us_stock_risk_taxonomy 失败: {e}")
             raise
-
-    def get_global_latest_10k_sections_date(self) -> Optional[date]:
-        from src.model.us_stock_10k_sections_raw_model import UsStock10kSectionsRawModel
-
-        try:
-            return self._extract_valid_date(
-                self.db.client.query_df(
-                    UsStock10kSectionsRawModel.QUERY_GLOBAL_LATEST_FILING_DATE_SQL
-                )
-            )
-        except Exception as e:
-            app_logger.error(f"全局 10K 爬取时间查询失败: {e}")
-            return None
 
     def get_global_latest_risk_factors_date(self) -> Optional[date]:
         from src.model.us_stock_risk_factors_model import UsStockRiskFactorsModel
